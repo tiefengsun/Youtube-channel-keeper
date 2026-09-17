@@ -449,3 +449,13 @@ def test_shutdown_callback(client):
     client.app.state.request_shutdown = lambda: called.append(True)
     assert client.post('/api/shutdown').status_code == 200
     assert called == [True]
+
+
+def test_restart_callback_and_instance_id(client):
+    called = []
+    before = client.get('/api/state').json()['instance_id']
+    assert client.get('/api/health').json()['instance_id'] == before
+    assert client.post('/api/restart').status_code == 503
+    client.app.state.request_restart = lambda: called.append(True)
+    assert client.post('/api/restart').status_code == 200
+    assert called == [True]

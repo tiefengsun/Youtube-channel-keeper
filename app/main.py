@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import sqlite3
 import time
+import uuid
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Request
@@ -91,6 +92,7 @@ def create_app(data_dir=None, run_engine=True):
                 lock.release()
 
     app = FastAPI(title='频道收藏站', lifespan=lifespan, docs_url=None, redoc_url=None)
+    instance_id = uuid.uuid4().hex
     app.state.store = store
     app.state.engine = engine
     allowed_hosts = ['127.0.0.1', 'localhost', '[::1]', 'testserver']
@@ -136,11 +138,12 @@ def create_app(data_dir=None, run_engine=True):
 
     @app.get('/api/health')
     def health():
-        return {'app_id': 'channel-keeper'}
+        return {'app_id': 'channel-keeper', 'instance_id': instance_id}
 
     @app.get('/api/state')
     def state():
-        return {'app_id': 'channel-keeper', 'channels': store.channels(), 'jobs': store.jobs(),
+        return {'app_id': 'channel-keeper', 'instance_id': instance_id,
+                'channels': store.channels(), 'jobs': store.jobs(),
                 'manual_jobs': store.manual_jobs(), 'stats': store.stats(),
                 'settings': store.settings(), 'diagnostics': diagnostics(), 'auth': store.auth_info()}
 
@@ -168,6 +171,14 @@ def create_app(data_dir=None, run_engine=True):
         callback = getattr(app.state, 'request_shutdown', None)
         if callback is None:
             raise HTTPException(503, '当前运行方式不支持网页停止，请在服务窗口按 Ctrl+C')
+        callback()
+        return {'ok': True}
+
+    @app.post('/api/restart')
+    def restart():
+        callback = getattr(app.state, 'request_restart', None)
+        if callback is None:
+            raise HTTPException(503, '当前运行方式不支持网页重启')
         callback()
         return {'ok': True}
 

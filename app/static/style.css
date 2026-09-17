@@ -25,3 +25,7 @@ dialog{border:1px solid #e7eade;border-radius:16px;width:570px;max-width:calc(10
 .cookie-guidance{margin:14px 0 0;color:#667b6d;font-size:.88rem;line-height:1.65}
 .cookie-guidance code{font-size:.92em;overflow-wrap:anywhere}
 .cookie-guidance a{color:#a95336;text-decoration:underline}
+.restart-service{display:block;width:100%;margin-top:17px;padding:8px 10px;border:1px solid #dfe6d9;border-radius:7px;background:#f7faf5;color:#47624c;text-align:left;font:inherit;cursor:pointer}
+.restart-service:hover:not(:disabled){background:#eaf2e7;border-color:#cbdcc8}
+.restart-service:disabled{opacity:.55;cursor:default}
+@media(max-width:850px){.sidebar-bottom{display:block;margin-top:auto;padding:14px 0 0;border-top:0;font-size:0}.sidebar-bottom #connection-dot,.sidebar-bottom #connection,.sidebar-bottom small{display:none}.restart-service{width:100%;margin:0;padding:9px 0;text-align:center;font-size:0}.restart-service::before{content:'↻';font-size:20px}}

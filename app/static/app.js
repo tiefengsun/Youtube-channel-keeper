@@ -3,7 +3,7 @@ const $ = (q, root = document) => root.querySelector(q);
 const $$ = (q, root = document) => [...root.querySelectorAll(q)];
 const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let state, editId = null, deleteId = null, channelFilter = 'all', jobFilter = 'all', settingsDirty = false, authDirty = false, inspectedVideo = null;
-let toastTimer, refreshBusy = false, lastChannels = '', lastJobs = '';
+let toastTimer, refreshBusy = false, restarting = false, lastChannels = '', lastJobs = '';
 const pendingChannels = new Set();
 const colors = [['#eaeedf','#748958'],['#f5e9df','#ae845f'],['#e6eef0','#72979b'],['#ede7f2','#9a81ac'],['#f0ebdb','#a48f57']];
 const statuses = {queued:'排队中',downloading:'下载中',retrying:'等待重试',completed:'已完成',failed:'下载失败',cancelled:'已取消'};
@@ -93,13 +93,15 @@ function renderSettings() {
   $('#manual-destination').textContent = state.settings.manual_output_dir ? '保存位置：' + state.settings.manual_output_dir : '';
 }
 async function refresh() {
-  if (refreshBusy) return;
+  if (refreshBusy || restarting) return;
   refreshBusy = true;
   try {
     state = await api('/state');
     $('#connection-banner').hidden = true;
     $('#connection-dot').classList.remove('offline');
     $('#connection').textContent = state.settings.paused ? '调度已暂停' : '服务运行中';
+    $('#restart-service').disabled = false;
+    $('#restart-service').title = state.instance_id ? '正常重启后台服务；未完成任务会在重启后恢复' : '当前后台尚不支持网页重启，请先手动重启一次';
     for (const key of ['channels','completed','pending','failed']) $('#stat-' + key).textContent = state.stats[key];
     $('#nav-count').textContent = state.stats.channels;
     $('#queue-count').textContent = state.stats.pending;
@@ -108,8 +110,32 @@ async function refresh() {
     $('#connection-banner').hidden = false;
     $('#connection-dot').classList.add('offline');
     $('#connection').textContent = '连接已断开';
+    $('#restart-service').disabled = true;
   } finally { refreshBusy = false; }
 }
+$('#restart-service').addEventListener('click', async e => {
+  if (!state?.instance_id) return toast('当前后台仍是旧版本，需要手动重启一次；之后就能使用此按钮。', true);
+  if (restarting) return;
+  const button = e.currentTarget, before = state.instance_id;
+  restarting = true; button.disabled = true; button.textContent = '↻ 正在重启…';
+  $('#connection').textContent = '正在重启服务';
+  try {
+    try { await api('/restart', 'POST'); }
+    catch(error) { if (!['TypeError','TimeoutError'].includes(error.name)) throw error; }
+    const deadline = Date.now() + 60000;
+    while (Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      try {
+        const next = await api('/state');
+        if (next.instance_id && next.instance_id !== before) {
+          restarting = false; state = next; await refresh(); toast('服务已重新启动'); return;
+        }
+      } catch (_) { /* The socket closes briefly during restart. */ }
+    }
+    throw new Error('重启尚未完成，请检查服务日志或启动窗口');
+  } catch(error) { toast(error.message, true); }
+  finally { restarting = false; button.textContent = '↻ 重启服务'; await refresh(); }
+});
 function openChannel(id = null) {
   editId = id;
   const form = $('#channel-form'); form.reset();

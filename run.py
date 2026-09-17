@@ -61,8 +61,18 @@ def main():
     print(f'Channel Keeper: {url}\nKeep this process running. Ctrl+C to stop.')
     app = create_app(args.data_dir)
     server = uvicorn.Server(uvicorn.Config(app, host=bind_host, port=args.port, log_level='info', access_log=False))
+    restart_requested = threading.Event()
     app.state.request_shutdown = lambda: setattr(server, 'should_exit', True)
+    def request_restart():
+        restart_requested.set()
+        server.should_exit = True
+    app.state.request_restart = request_restart
     server.run()
+    if restart_requested.is_set():
+        # Uvicorn has closed its socket and the app lifespan has released the
+        # SQLite instance lock. Replace this process so Python reloads code.
+        script = str(Path(__file__).resolve())
+        os.execv(sys.executable, [sys.executable, script, *sys.argv[1:]])
 
 
 if __name__ == '__main__':
