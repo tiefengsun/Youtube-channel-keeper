@@ -1,0 +1,415 @@
+import base64
+import json
+import subprocess
+import sys
+import threading
+import time
+from pathlib import Path
+
+from fastapi.testclient import TestClient
+import pytest
+
+from app.engine import Engine, Interrupted, download_command, isolated_cookies
+from app.main import InstanceLock, create_app
+from app.models import ChannelCreate, ChannelEdit, Settings, channel_url
+from app.store import Store
+
+
+def videos(*ids):
+    return [{'id': f'{n:011d}', 'title': f'视频 {n}'} for n in ids]
+
+
+@pytest.fixture
+def store(tmp_path):
+    return Store(tmp_path / '测试数据' / 'keeper.sqlite3')
+
+
+def add(store, initial=0):
+    return store.add_channels([ChannelCreate(url='@sample', initial_count=initial)])[0]
+
+
+def test_first_scan_is_baseline_then_only_new_videos(store):
+    channel = add(store)
+    assert store.finish_scan(channel, videos(3, 2, 1), '测试频道') == 0
+    assert store.jobs() == []
+    assert store.channel(channel)['name'] == '测试频道'
+    assert store.finish_scan(channel, videos(5, 4, 3, 2, 1)) == 2
+    assert store.finish_scan(channel, videos(5, 4, 3, 2, 1)) == 0
+    assert {j['video_id'] for j in store.jobs()} == {'00000000005', '00000000004'}
+
+
+def test_initial_latest_count_and_no_repeat(store):
+    channel = add(store, 2)
+    assert store.finish_scan(channel, videos(3, 2, 1)) == 2
+    assert len(store.jobs()) == 2
+    assert store.finish_scan(channel, videos(3, 2, 1)) == 0
+
+
+def test_failed_scan_rolls_back_entire_baseline(store):
+    channel = add(store, 2)
+    with pytest.raises(ValueError):
+        store.finish_scan(channel, videos(3, 2) + [{'id': 'invalid'}])
+    store.scan_error(channel, '网络中断')
+    assert not store.channel(channel)['initialized']
+    assert store.channels()[0]['video_count'] == 0
+    assert store.jobs() == []
+    assert store.finish_scan(channel, videos(4, 3, 2)) == 2
+
+
+def test_live_video_not_seen_until_publish(store):
+    channel = add(store)
+    upcoming = {'id':'abcdefghijk', 'title':'即将发布', 'live_status':'is_upcoming'}
+    store.finish_scan(channel, videos(1) + [upcoming])
+    store.finish_scan(channel, [dict(upcoming, live_status='not_live')] + videos(1))
+    assert [j['video_id'] for j in store.jobs()] == ['abcdefghijk']
+
+
+def test_recovery_and_disabled_channel(store):
+    channel = add(store, 1)
+    store.claim_scan()
+    store.finish_scan(channel, videos(1))
+    job = store.claim_job()
+    assert job['attempts'] == 1
+    store.recover()
+    assert store.job(job['id'])['status'] == 'queued'
+    assert store.job(job['id'])['attempts'] == 0
+    store.update_channel(channel, ChannelEdit(name='sample',interval_minutes=60,format='mkv',resolution=720,enabled=False))
+    assert store.claim_job() is None
+    assert store.claim_scan() is None
+
+
+def test_atomic_claim_prevents_duplicate_download(store):
+    channel = add(store, 1)
+    store.finish_scan(channel, videos(1))
+    results = []
+    threads = [threading.Thread(target=lambda: results.append(store.claim_job())) for _ in range(8)]
+    for thread in threads: thread.start()
+    for thread in threads: thread.join()
+    assert sum(j is not None for j in results) == 1
+
+
+def test_scheduled_first_run_waits_then_can_be_changed_to_now(store):
+    start_at = time.time() + 3600
+    channel = store.add_channels([ChannelCreate(url='@scheduled',schedule_mode='scheduled',start_at=start_at)])[0]
+    assert store.channel(channel)['next_scan'] == pytest.approx(start_at)
+    assert store.claim_scan() is None
+    store.update_channel(channel, ChannelEdit(name='scheduled',interval_minutes=60,format='mp4',
+        resolution=1080,enabled=True,schedule_mode='now'))
+    assert store.claim_scan()['id'] == channel
+
+
+def test_edit_can_keep_or_replace_next_run(store):
+    channel = add(store)
+    with store.connect() as db:
+        db.execute('UPDATE channels SET next_scan=? WHERE id=?',(time.time()+7200,channel))
+    original = store.channel(channel)['next_scan']
+    store.update_channel(channel, ChannelEdit(name='sample',interval_minutes=180,format='mkv',resolution=720,enabled=True))
+    assert store.channel(channel)['next_scan'] == original
+    scheduled = time.time() + 5400
+    store.update_channel(channel, ChannelEdit(name='sample',interval_minutes=180,format='mkv',resolution=720,
+        enabled=True,schedule_mode='scheduled',start_at=scheduled))
+    assert store.channel(channel)['next_scan'] == pytest.approx(scheduled)
+
+
+def test_rejects_invalid_scheduled_time():
+    with pytest.raises(ValueError,match='请选择'):
+        ChannelCreate(url='@sample',schedule_mode='scheduled')
+    with pytest.raises(ValueError,match='不能早于'):
+        ChannelCreate(url='@sample',schedule_mode='scheduled',start_at=time.time()-3600)
+
+
+@pytest.mark.parametrize('bad', ['https://evil.com/@foo','http://youtube.com/@foo',
+    'https://youtube.com/watch?v=abcdefghijk','https://youtube.com/playlist?list=x',
+    'https://youtube.com.evil.com/@foo','https://user@youtube.com/@foo',
+    'https://youtube.com/@foo%2F..%2Fwatch', 'file:///tmp/video', 'https://youtube.com:999/@foo'])
+def test_reject_non_channel_urls(bad):
+    with pytest.raises(ValueError): channel_url(bad)
+
+
+@pytest.mark.parametrize('url', ['@sample','https://youtube.com/@sample/videos?view=0',
+    'www.youtube.com/@sample', 'https://www.youtube.com/@sample/shorts'])
+def test_normalize_channel_url(url):
+    assert channel_url(url) == 'https://www.youtube.com/@sample'
+
+
+@pytest.mark.parametrize('fmt', ['mp4','mkv','webm','mp3','m4a'])
+def test_format_commands_and_strict_resolution(fmt, tmp_path):
+    settings = Settings(output_dir=str(tmp_path / '中文目录')).model_dump()
+    command = download_command({'channel_id':1,'format':fmt,'resolution':720,'video_id':'abcdefghijk'},settings)
+    assert command[-1] == 'https://www.youtube.com/watch?v=abcdefghijk'
+    selector = command[command.index('-f') + 1]
+    if fmt in ('mp3','m4a'):
+        assert command[command.index('--audio-format') + 1] == fmt
+    else:
+        assert selector == 'bestvideo[height<=720]+bestaudio/best[height<=720]'
+        assert '--format-sort-force' in command
+        sort = command[command.index('-S') + 1]
+        assert sort.split(',')[0] == 'res'
+        if fmt == 'mp4':
+            assert 'ext:mp4:m4a' in sort
+        elif fmt == 'webm':
+            assert 'ext:webm:webm' in sort
+        assert command[command.index('--remux-video') + 1] == fmt
+
+
+def test_unlimited_resolution_has_no_height_filter(tmp_path):
+    settings = Settings(output_dir=str(tmp_path)).model_dump()
+    command = download_command(
+        {'channel_id': 1, 'format': 'mp4', 'resolution': 0, 'video_id': 'abcdefghijk'}, settings)
+    assert command[command.index('-f') + 1] == 'bestvideo+bestaudio/best'
+
+
+@pytest.fixture
+def client(tmp_path):
+    app = create_app(tmp_path / 'api', run_engine=False)
+    credentials = base64.b64encode(b'keeper:keeper').decode()
+    with TestClient(app, base_url='http://127.0.0.1:8765',
+                    headers={'X-Local-Request':'1', 'Authorization': f'Basic {credentials}'}) as client:
+        yield client
+
+
+def test_api_add_update_scan_remove_and_atomic_duplicates(client):
+    response = client.post('/api/channels',json={'channels':[{'url':'@sample'}]})
+    assert response.status_code == 201
+    channel_id = response.json()['ids'][0]
+    response = client.post('/api/channels',json={'channels':[{'url':'@other'},{'url':'@sample'}]})
+    assert response.status_code == 409
+    assert len(client.get('/api/state').json()['channels']) == 1
+    response = client.put(f'/api/channels/{channel_id}',json={'name':'新备注','interval_minutes':30,'format':'mkv','resolution':2160,'enabled':True})
+    assert response.status_code == 200
+    assert client.post(f'/api/channels/{channel_id}/scan').status_code == 200
+    assert client.delete(f'/api/channels/{channel_id}').status_code == 200
+    assert client.get('/api/state').json()['channels'] == []
+
+
+def test_local_request_protection(client):
+    assert client.post('/api/scan',headers={'X-Local-Request':''}).status_code == 403
+    assert client.post('/api/scan',headers={'Origin':'https://evil.example'}).status_code == 403
+    assert client.get('/api/state',headers={'Host':'evil.example'}).status_code == 400
+    assert client.get('/api/state',headers={'Sec-Fetch-Site':'cross-site'}).status_code == 403
+    assert client.post('/api/scan',headers={'Origin':'http://127.0.0.1:8765'}).status_code == 200
+
+
+def test_lan_mode_requires_authentication_on_pages_and_api(tmp_path, monkeypatch):
+    monkeypatch.setenv('CHANNEL_KEEPER_LAN_IP', '10.168.165.219')
+    app = create_app(tmp_path / 'lan', run_engine=False)
+    with TestClient(app, base_url='http://10.168.165.219:8765') as lan_client:
+        assert lan_client.get('/api/health').json()['app_id'] == 'channel-keeper'
+        assert lan_client.get('/').status_code == 401
+        assert lan_client.get('/api/state').status_code == 401
+        assert lan_client.get('/api/state', headers={'Authorization': 'Basic invalid'}).status_code == 401
+        wrong = base64.b64encode(b'keeper:wrong').decode()
+        assert lan_client.get('/api/state', headers={'Authorization': f'Basic {wrong}'}).status_code == 401
+        correct = base64.b64encode(b'keeper:keeper').decode()
+        headers = {'Authorization': f'Basic {correct}', 'X-Local-Request': '1'}
+        assert lan_client.get('/', headers=headers).status_code == 200
+        assert lan_client.get('/api/state', headers=headers).json()['auth'] == {'username': 'keeper', 'must_change': True}
+        assert lan_client.post('/api/scan', headers=headers).status_code == 200
+        assert lan_client.post('/api/scan', headers={'Authorization': f'Basic {correct}'}).status_code == 403
+        assert lan_client.put('/api/auth', headers=headers, json={'username': 'keeper', 'current_password': 'bad',
+            'new_password': 'new-password-123'}).status_code == 403
+        assert lan_client.put('/api/auth', headers=headers, json={'username': 'new-admin', 'current_password': 'keeper',
+            'new_password': 'short'}).status_code == 400
+        changed = lan_client.put('/api/auth', headers=headers, json={'username': 'new-admin',
+            'current_password': 'keeper', 'new_password': 'new-password-123'})
+        assert changed.status_code == 200
+        assert changed.json()['auth'] == {'username': 'new-admin', 'must_change': False}
+        assert lan_client.get('/api/state', headers=headers).status_code == 401
+        updated = base64.b64encode(b'new-admin:new-password-123').decode()
+        assert lan_client.get('/api/state', headers={'Authorization': f'Basic {updated}'}).status_code == 200
+    restarted = create_app(tmp_path / 'lan', run_engine=False)
+    with TestClient(restarted, base_url='http://10.168.165.219:8765') as lan_client:
+        assert lan_client.get('/api/state', headers={'Authorization': f'Basic {updated}'}).json()['auth']['must_change'] is False
+
+
+def test_settings_validation_and_persistence(client, tmp_path):
+    settings = client.get('/api/state').json()['settings']
+    settings.update(output_dir=str(tmp_path / '下载'),proxy='http://127.0.0.1:7890')
+    assert client.put('/api/settings',json=settings).status_code == 200
+    assert client.get('/api/state').json()['settings']['proxy'] == settings['proxy']
+    assert client.put('/api/settings',json={**settings,'proxy':'file:///etc/passwd'}).status_code == 422
+    assert client.put('/api/settings',json={**settings,'cookies_file':str(tmp_path / 'missing.txt')}).status_code == 422
+
+
+def test_cookie_import_enables_managed_file_and_retries_auth_failure(client):
+    store = client.app.state.store
+    channel = add(store, 1)
+    store.finish_scan(channel, videos(1))
+    job = store.claim_job()
+    store.update_job(job['id'],status='failed',error="Sign in to confirm you're not a bot")
+    content = '# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\t__Secure-3PSID\tsecret\n.example.com\tTRUE\t/\tTRUE\t0\tSID\tleak\n'
+    response = client.post('/api/settings/cookies/import',json={'filename':'cookies.txt','content':content})
+    assert response.status_code == 200
+    assert response.json()['kept'] == 1
+    assert response.json()['retried_jobs'] == 1
+    target = Path(store.settings()['cookies_file'])
+    assert response.json()['cookies_file'] == str(target)
+    assert target.name == 'youtube-cookies.txt' and target.is_file()
+    assert 'secret' in target.read_text(encoding='utf-8')
+    assert 'leak' not in target.read_text(encoding='utf-8')
+    assert store.job(job['id'])['status'] == 'queued'
+
+
+def test_cancel_retry_and_active_process_race(client):
+    store = client.app.state.store
+    channel = add(store, 1)
+    store.finish_scan(channel, videos(1))
+    job = store.claim_job()
+    engine = client.app.state.engine
+    engine.active_job = job['id']
+    assert client.post(f"/api/jobs/{job['id']}/cancel").status_code == 200
+    assert engine.cancel_event.is_set()
+    assert client.post(f"/api/jobs/{job['id']}/retry").status_code == 409
+    assert client.delete(f'/api/channels/{channel}').status_code == 409
+    engine.active_job = None
+    assert client.post(f"/api/jobs/{job['id']}/retry").status_code == 200
+    assert store.job(job['id'])['attempts'] == 0
+    assert store.job(job['id'])['status'] == 'queued'
+
+
+def test_open_completed_job_folder_uses_stored_filepath(client, tmp_path, monkeypatch):
+    store = client.app.state.store
+    channel = add(store, 1)
+    store.finish_scan(channel, videos(1))
+    job = store.claim_job()
+    downloaded = tmp_path / '频道' / '视频.mp4'
+    downloaded.parent.mkdir()
+    downloaded.write_bytes(b'video')
+    store.update_job(job['id'], status='completed', filepath=str(downloaded))
+    opened = []
+    monkeypatch.setattr('app.main.open_file_location', lambda path: opened.append(path))
+
+    response = client.post(f"/api/jobs/{job['id']}/open-folder")
+
+    assert response.status_code == 200
+    assert opened == [str(downloaded)]
+
+
+def test_open_job_folder_rejects_missing_file(client, tmp_path):
+    store = client.app.state.store
+    channel = add(store, 1)
+    store.finish_scan(channel, videos(1))
+    job = store.claim_job()
+    store.update_job(job['id'], status='completed', filepath=str(tmp_path / 'missing.mp4'))
+    assert client.post(f"/api/jobs/{job['id']}/open-folder").status_code == 404
+
+
+def test_cannot_delete_scanning_channel(client):
+    store = client.app.state.store
+    channel = add(store)
+    store.claim_scan()
+    assert client.delete(f'/api/channels/{channel}').status_code == 409
+
+
+def test_instance_lock(tmp_path):
+    first = InstanceLock(tmp_path / 'instance.lock')
+    second = InstanceLock(tmp_path / 'instance.lock')
+    first.acquire()
+    try:
+        with pytest.raises(RuntimeError): second.acquire()
+    finally:
+        first.release()
+    second.acquire()
+    second.release()
+
+
+def test_real_subprocess_progress_and_final_file(store, tmp_path, monkeypatch):
+    channel = add(store, 1)
+    store.finish_scan(channel, videos(1))
+    job = store.claim_job()
+    output = tmp_path / '视频.mp4'
+    script = tmp_path / 'fake_downloader.py'
+    script.write_text('import json\nfrom pathlib import Path\n'
+        + f'path = {str(output)!r}\n'
+        + 'print(\'__PROGRESS__\' + json.dumps({"total_bytes":100,"downloaded_bytes":50,"speed":1024,"eta":1}))\n'
+        + 'Path(path).write_bytes(b"test video")\n'
+        + 'print("__FILE__" + json.dumps(path))\n',encoding='utf-8')
+    monkeypatch.setattr('app.engine.diagnostics',lambda:{'ffmpeg':True,'ffprobe':True,'node':True,'ejs':True})
+    monkeypatch.setattr('app.engine.download_command',lambda *_:[sys.executable,'-u',str(script)])
+    result = Engine(store).download(job,Settings(output_dir=str(tmp_path)).model_dump())
+    assert Path(result) == output
+    assert store.job(job['id'])['progress'] == 50
+
+
+def test_scanner_rejects_partial_response(store, tmp_path, monkeypatch):
+    channel_id = add(store)
+    channel = store.channel(channel_id)
+    engine = Engine(store)
+    script = tmp_path / 'scan.py'
+    script.write_text('print(\'{"entries":[null]}\')',encoding='utf-8')
+    original_spawn = engine.spawn
+    monkeypatch.setattr(engine,'spawn',lambda args:original_spawn([sys.executable,str(script)]))
+    with pytest.raises(RuntimeError,match='不完整'):
+        engine.scan_channel(channel,store.settings())
+    assert not store.channel(channel_id)['initialized']
+
+
+def test_worker_failure_backoff_and_retry_exhaustion(store, monkeypatch):
+    channel = add(store, 1)
+    store.finish_scan(channel,videos(1))
+    engine = Engine(store)
+    settings = store.settings(); settings['retries'] = 1; store.save_settings(settings)
+    def fail(*args):
+        engine.stop_event.set()
+        raise RuntimeError('模拟网络故障')
+    monkeypatch.setattr(engine,'download',fail)
+    engine.download_loop()
+    job = store.jobs()[0]
+    assert job['status'] == 'retrying'
+    assert job['available_at'] > time.time()
+    store.update_job(job['id'],available_at=0)
+    engine.stop_event.clear()
+    engine.download_loop()
+    assert store.job(job['id'])['status'] == 'failed'
+
+
+def test_scheduler_end_to_end_with_fake_youtube(store, tmp_path, monkeypatch):
+    channel = add(store)
+    engine = Engine(store)
+    snapshot = videos(1)
+    monkeypatch.setattr(engine,'scan_channel',lambda *_:(snapshot.copy(),'自动化频道'))
+    def fake_download(job, settings):
+        path = tmp_path / (job['video_id'] + '.mp4'); path.write_bytes(b'video'); return str(path)
+    monkeypatch.setattr(engine,'download',fake_download)
+    def wait_for(predicate):
+        deadline = time.monotonic() + 8
+        while time.monotonic() < deadline:
+            if predicate(): return
+            time.sleep(.05)
+        pytest.fail('Timed out waiting for scheduler')
+    engine.start()
+    try:
+        wait_for(lambda: store.channel(channel)['initialized'])
+        assert store.jobs() == []
+        snapshot.insert(0,videos(2)[0]); store.request_scan(channel)
+        wait_for(lambda: store.stats()['completed'] == 1)
+        store.request_scan(channel)
+        wait_for(lambda: store.channel(channel)['next_scan'] > time.time())
+        assert len(store.jobs()) == 1
+    finally:
+        engine.stop()
+
+
+def test_page_and_assets(client):
+    assert '频道收藏站' in client.get('/').text
+    for path in ['/app.js','/style.css','/favicon.svg']:
+        assert client.get(path).status_code == 200
+    assert client.get('/').headers['content-security-policy'].startswith("default-src 'self'")
+
+
+def test_cookie_source_is_never_modified(tmp_path):
+    source = tmp_path / 'cookies.txt'; source.write_text('# Netscape HTTP Cookie File\n')
+    settings = Settings(cookies_file=str(source)).model_dump()
+    with isolated_cookies(settings) as copied:
+        copied_path = Path(copied['cookies_file'])
+        assert copied_path != source
+        copied_path.write_text('mutated by downloader')
+    assert source.read_text() == '# Netscape HTTP Cookie File\n'
+    assert not copied_path.exists()
+
+
+def test_shutdown_callback(client):
+    called = []
+    client.app.state.request_shutdown = lambda: called.append(True)
+    assert client.post('/api/shutdown').status_code == 200
+    assert called == [True]

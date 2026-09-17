@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+.pytest_cache/
+data/
+downloads/
+*.pyc
+*.log
+artifacts/
+.env
+.env.*
+*.tar.gz
+*.zip

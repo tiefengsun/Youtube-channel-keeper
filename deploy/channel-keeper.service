@@ -1,0 +1,17 @@
+[Unit]
+Description=Channel Keeper YouTube channel monitor
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/channel-keeper
+ExecStart=%h/channel-keeper/.venv/bin/python %h/channel-keeper/run.py --no-browser
+Restart=on-failure
+RestartSec=10
+UMask=0077
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=-%h/.config/channel-keeper/lan.env
+
+[Install]
+WantedBy=default.target
