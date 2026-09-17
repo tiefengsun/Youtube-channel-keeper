@@ -39,6 +39,7 @@
     </section>
     <section class="page" id="view-manual" hidden>
       <div class="page-heading"><div><div class="eyebrow">SAVE A VIDEO ON DEMAND</div><h1>看到喜欢的，马上收藏<span class="accent">。</span></h1><p>粘贴单条 YouTube 视频链接，查看可用画质后选择下载。</p></div></div>
+      <div id="manual-service-warning" class="banner danger" hidden>后台仍在运行旧版本。请重启本机 Channel Keeper 服务，然后刷新页面再解析视频。</div>
       <div class="panel manual-panel"><form id="manual-inspect-form"><label>视频链接<div class="path-input"><input name="url" type="url" required placeholder="https://www.youtube.com/watch?v=…" autocomplete="off"><button class="button primary" type="submit" id="inspect-video">解析视频</button></div></label></form><p id="manual-error" class="inline-error" role="alert" hidden></p><div id="manual-preview" hidden><div class="manual-preview-heading"><span class="pill">已解析</span><h2 id="manual-title"></h2><p id="manual-meta" class="muted"></p></div><form id="manual-download-form"><div class="form-row"><label>视频画质<select name="resolution" required></select></label><label>文件格式<select name="format"><option value="mp4">MP4 · 通用视频</option><option value="mkv">MKV · 更多编码</option><option value="webm">WebM · 网页视频</option></select></label></div><p id="manual-destination" class="muted"></p><div class="form-footer"><span class="muted">下载会在后台进行，进度可在下载任务中查看。</span><button class="button primary" type="submit">加入下载队列 ↓</button></div></form></div></div>
     </section>
     <section class="page" id="view-downloads" hidden>

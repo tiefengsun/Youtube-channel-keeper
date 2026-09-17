@@ -18,6 +18,7 @@ async function api(path, method = 'GET', body, timeout = 20000) {
   const data = await response.json();
   if (!response.ok) {
     let error = data.detail || '请求失败';
+    if (response.status === 405 && path.startsWith('/manual/')) error = '后台仍在运行旧版本，请重启 Channel Keeper 服务并刷新页面后重试。';
     if (Array.isArray(error)) error = error.map(x => x.msg.replace(/^Value error, /, '')).join('；');
     throw new Error(error);
   }
@@ -86,7 +87,10 @@ function renderSettings() {
   $('#pause-scheduler').textContent = state.settings.paused ? '▶ 恢复调度' : 'Ⅱ 暂停调度';
   $('#default-auth-banner').hidden = !state.auth?.must_change;
   if (!authDirty && state.auth) $('#auth-form').elements.username.value = state.auth.username;
-  $('#manual-destination').textContent = '保存位置：' + state.settings.manual_output_dir;
+  const oldService = !Array.isArray(state.manual_jobs) || !state.settings.manual_output_dir;
+  $('#manual-service-warning').hidden = !oldService;
+  $('#inspect-video').disabled = oldService;
+  $('#manual-destination').textContent = state.settings.manual_output_dir ? '保存位置：' + state.settings.manual_output_dir : '';
 }
 async function refresh() {
   if (refreshBusy) return;
