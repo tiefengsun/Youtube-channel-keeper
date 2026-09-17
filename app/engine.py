@@ -18,6 +18,10 @@ from .storage import channel_directory
 log = logging.getLogger(__name__)
 
 
+def cookies_rotated(value):
+    return 'provided youtube account cookies are no longer valid' in str(value).lower()
+
+
 class Interrupted(Exception):
     pass
 
@@ -38,7 +42,7 @@ def isolated_cookies(settings):
 def base_command(settings):
     args = [sys.executable, '-m', 'yt_dlp', '--ignore-config', '--encoding', 'utf-8',
             '--no-colors', '--socket-timeout', '30', '--retries', '3',
-            '--extractor-retries', '2', '--js-runtimes', 'node', '--no-warnings']
+            '--extractor-retries', '2', '--js-runtimes', 'node']
     if settings['proxy']:
         args += ['--proxy', settings['proxy']]
     if settings['cookies_file']:
@@ -151,7 +155,9 @@ class Engine:
                 except subprocess.TimeoutExpired:
                     raise RuntimeError('解析视频超过 2 分钟，请检查网络或代理')
                 if process.returncode:
-                    raise RuntimeError(stderr.strip()[-2000:] or '视频信息解析失败')
+                    detail = stderr.strip()
+                    prefix = 'The provided YouTube account cookies are no longer valid.\n' if cookies_rotated(detail) else ''
+                    raise RuntimeError(prefix + (detail[-1800:] or '视频信息解析失败'))
                 data = json.loads(stdout)
                 if data.get('id') != url.rsplit('=', 1)[-1]:
                     raise RuntimeError('返回的视频信息与链接不一致')
@@ -184,7 +190,9 @@ class Engine:
                 except subprocess.TimeoutExpired:
                     continue
             if process.returncode:
-                raise RuntimeError(stderr.strip()[-2000:] or 'yt-dlp 扫描失败')
+                detail = stderr.strip()
+                prefix = 'The provided YouTube account cookies are no longer valid.\n' if cookies_rotated(detail) else ''
+                raise RuntimeError(prefix + (detail[-1800:] or 'yt-dlp 扫描失败'))
             data = json.loads(stdout)
             entries = data.get('entries')
             if not isinstance(entries, list) or any(not isinstance(e, dict) for e in entries):
@@ -224,6 +232,10 @@ class Engine:
             if settings.get(field):
                 value = value.replace(settings[field], '<已隐藏配置>')
         hint = ''
+        if cookies_rotated(value):
+            return ('Cookies 已失效：YouTube 已轮换登录会话。请在 Chrome 无痕窗口登录 YouTube，'
+                '在同一标签打开 youtube.com/robots.txt 后导出 youtube.com 的 cookies.txt，'
+                '随即关闭无痕窗口并重新导入。导出后不要再次打开该无痕会话。')
         if 'confirm you' in value.lower() and 'bot' in value.lower():
             hint = 'YouTube 要求登录验证。请在偏好设置中填写有效的 Cookies 文件，检查网络后重试。\n'
         elif 'requested format is not available' in value.lower():
@@ -252,6 +264,7 @@ class Engine:
         process = self.spawn(download_command(job, settings), merge=True)
         lines = queue.Queue()
         tail = deque(maxlen=12)
+        rotated_warning = False
 
         def reader():
             try:
@@ -295,10 +308,15 @@ class Engine:
                     except (ValueError, TypeError, KeyError):
                         pass
                 else:
+                    if cookies_rotated(line):
+                        rotated_warning = True
                     tail.append(line)
             process.wait(timeout=30)
             if process.returncode:
-                raise RuntimeError('\n'.join(tail)[-2000:] or 'yt-dlp 下载失败')
+                detail = '\n'.join(tail)[-1800:] or 'yt-dlp 下载失败'
+                if rotated_warning:
+                    detail = 'The provided YouTube account cookies are no longer valid.\n' + detail
+                raise RuntimeError(detail)
             result = Path(filepath).resolve() if filepath else None
             root = job['output_dir'] if job.get('kind') == 'manual' else settings['output_dir']
             if not result or not result.is_file() or not result.is_relative_to(Path(root).resolve()):
@@ -338,11 +356,13 @@ class Engine:
                 log.warning('Download failed: %s', self.safe_error(exc, settings))
                 with self.actions:
                     if job and (current := self.get_job(job)) and current['status'] == 'downloading':
-                        retry = job['attempts'] <= settings['retries']
+                        error = self.safe_error(exc, settings)
+                        invalid_cookies = error.startswith('Cookies 已失效')
+                        retry = not invalid_cookies and job['attempts'] <= settings['retries']
                         self.update_job(job, status='retrying' if retry else 'failed',
-                            stage='等待自动重试' if retry else '下载失败', speed='', eta='',
+                            stage='等待自动重试' if retry else 'Cookies 已失效，等待重新导入' if invalid_cookies else '下载失败', speed='', eta='',
                             available_at=time.time() + min(3600, 60 * 2 ** (job['attempts'] - 1)),
-                            error=self.safe_error(exc, settings))
+                            error=error)
             finally:
                 with self.actions:
                     self.active_job = None

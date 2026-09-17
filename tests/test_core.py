@@ -9,7 +9,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 import pytest
 
-from app.engine import Engine, Interrupted, download_command, isolated_cookies
+from app.engine import Engine, Interrupted, base_command, download_command, isolated_cookies
 from app.main import InstanceLock, create_app
 from app.models import ChannelCreate, ChannelEdit, Settings, channel_url
 from app.store import Store
@@ -250,6 +250,27 @@ def test_cookie_import_enables_managed_file_and_retries_auth_failure(client):
     assert store.job(job['id'])['status'] == 'queued'
 
 
+def test_rotated_cookies_stop_channel_scan_and_resume_after_import(store):
+    channel = add(store, 1)
+    store.finish_scan(channel, videos(1))
+    job = store.claim_job()
+    raw = "WARNING: The provided YouTube account cookies are no longer valid. They have likely been rotated in the browser."
+    engine = Engine(store)
+    message = engine.safe_error(RuntimeError(raw), store.settings())
+    assert message.startswith('Cookies 已失效')
+    assert '--no-warnings' not in base_command(store.settings())
+    store.scan_error(channel, message)
+    store.update_job(job['id'], status='failed', error=message)
+    manual_id = store.add_manual_job('abcdefghijk', '标题', '作者', 'mp4', 720, str(store.path.parent))
+    store.update_manual_job(manual_id, status='failed', error=message)
+    assert store.channel(channel)['next_scan'] > time.time() + 3600 * 24 * 365
+    assert store.claim_scan() is None
+    assert store.retry_auth_failures() == 2
+    assert store.job(job['id'])['status'] == 'queued'
+    assert store.manual_job(manual_id)['status'] == 'queued'
+    assert store.channel(channel)['next_scan'] == 0
+
+
 def test_cancel_retry_and_active_process_race(client):
     store = client.app.state.store
     channel = add(store, 1)
@@ -361,6 +382,21 @@ def test_worker_failure_backoff_and_retry_exhaustion(store, monkeypatch):
     engine.stop_event.clear()
     engine.download_loop()
     assert store.job(job['id'])['status'] == 'failed'
+
+
+def test_worker_does_not_retry_rotated_cookies(store, monkeypatch):
+    channel = add(store, 1)
+    store.finish_scan(channel, videos(1))
+    engine = Engine(store)
+    def fail(*args):
+        engine.stop_event.set()
+        raise RuntimeError('The provided YouTube account cookies are no longer valid. They have likely been rotated in the browser.')
+    monkeypatch.setattr(engine, 'download', fail)
+    engine.download_loop()
+    job = store.jobs()[0]
+    assert job['status'] == 'failed'
+    assert job['stage'] == 'Cookies 已失效，等待重新导入'
+    assert job['error'].startswith('Cookies 已失效')
 
 
 def test_scheduler_end_to_end_with_fake_youtube(store, tmp_path, monkeypatch):

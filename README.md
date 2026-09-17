@@ -61,6 +61,8 @@ YouTube 有时提示 **Sign in to confirm you're not a bot**。本次真实 YouT
 
 Chrome 安装 Get cookies.txt 等导出扩展后，可以在「偏好设置」点击「选择并导入 cookies.txt」。工具在本机解析 Netscape 文件，只保留 YouTube、Google 和视频传输相关域名的未过期记录，保存到 `data/secrets/youtube-cookies.txt` 并自动启用。Cookie 值不会显示在页面或写入日志。因机器人验证失败而等待重试的任务会自动重新排队。
 
+**Cookies 文件的到期时间还没到，不代表登录会话仍有效。** YouTube 会轮换正在使用的浏览器会话 Cookies；此前从普通 Chrome 窗口导出的文件可能在几小时后失效。若任务提示「Cookies 已失效」，请按 [yt-dlp 官方导出方法](https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies)：新建 Chrome 无痕窗口登录 YouTube，在同一标签打开 `https://www.youtube.com/robots.txt`，用扩展导出 `youtube.com` 的 Cookies，立即关闭整个无痕窗口，并避免再次使用该会话。随后在偏好设置重新导入文件。工具会暂停这类任务的无效自动重试；导入新文件后自动重新排队并恢复频道扫描。静态导出文件无法由本工具自动刷新。如果换新 Cookies 后仍报登录验证，还需要检查当前网络出口 IP、YouTube 对该账户的限制以及 yt-dlp 版本。
+
 Cookies 导入区也支持把单个 `.txt` 文件直接拖入。视频保存目录可以手动输入或点击“选择路径”浏览服务端目录；在 Windows 中显示盘符，在 Ubuntu 中可从 `/`、用户主目录以及 `/mnt` 等挂载位置选择。通过远程浏览器管理 Ubuntu 服务时，选择器显示的是 Ubuntu 服务器目录。
 
 官方说明：[Cookies 使用说明](https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp)、[YouTube Cookies 导出说明](https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies)。只下载你有权保存的内容。

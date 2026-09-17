@@ -53,7 +53,7 @@ function renderChannels(force = false) {
     const [bg,fg] = colors[(c.id - 1) % colors.length];
     const paused = !c.enabled || state.settings.paused;
     const status = !c.enabled ? '已暂停' : state.settings.paused ? '全局已暂停' : c.scanning ? '正在扫描' : c.error ? '扫描异常' : c.initialized ? '自动监控中' : '等待首次扫描';
-    const next = paused ? (c.scanning ? '本次扫描结束后暂停' : '恢复后继续扫描') : c.scanning ? '正在读取频道列表…' : c.next_scan > Date.now() / 1000 ? `下次 ${timeText(c.next_scan)}` : '即将开始扫描';
+    const next = paused ? (c.scanning ? '本次扫描结束后暂停' : '恢复后继续扫描') : c.scanning ? '正在读取频道列表…' : c.error?.startsWith('Cookies 已失效') ? '等待重新导入 Cookies' : c.next_scan > Date.now() / 1000 ? `下次 ${timeText(c.next_scan)}` : '即将开始扫描';
     const monitorButton = `<button class="button monitor-button ${c.enabled?'':'resume'}" data-action="monitor" data-id="${c.id}" data-enabled="${c.enabled?'0':'1'}" aria-label="${c.enabled?'暂停':'开始'}监控 ${esc(c.name)}" title="${c.enabled?'暂停后不再启动此频道的新扫描和下载，已开始的任务会继续完成':'开始监控并安排一次扫描；全局暂停时需先恢复调度'}" ${pendingChannels.has(c.id)?'disabled':''}>${pendingChannels.has(c.id)?'正在更新…':c.enabled?'Ⅱ 暂停监控':'▶ 开始监控'}</button>`;
     return `<article class="channel-card"><div class="card-top"><div class="avatar" style="--avatar-bg:${bg};--avatar-fg:${fg}">${esc(c.name.replace(/^@/,'').slice(0,1).toUpperCase())}</div><div class="card-identity"><h3 title="${esc(c.name)}">${esc(c.name)}</h3><a href="${esc(c.url)}" target="_blank" rel="noreferrer">${esc(c.url.replace('https://www.youtube.com/',''))} ↗</a></div><div class="card-actions"><button class="icon-button" data-action="edit" data-id="${c.id}" aria-label="编辑 ${esc(c.name)}" title="编辑频道">⋯</button><button class="icon-button" data-action="delete" data-id="${c.id}" aria-label="移除 ${esc(c.name)}" title="移除频道">×</button></div></div><div class="card-status"><span class="pill ${paused?'paused':c.error?'error':''}">● ${status}</span><span class="card-count">已收藏 ${c.completed_count} 条</span></div><div class="card-config"><span class="chip">${c.format.toUpperCase()}</span><span class="chip">${quality(c)}</span><span class="chip">每 ${intervalText(c.interval_minutes)}</span><span class="chip">${c.tab === 'shorts' ? 'Shorts' : 'Videos'}</span></div><div class="card-bottom"><div class="scan-time">${c.last_scan ? '上次 ' + timeText(c.last_scan) : '等待建立首次基线'}<br>${next}</div><button class="scan-button" data-action="scan" data-id="${c.id}" ${c.scanning||paused?'disabled':''}>↻ 立即扫描</button></div>${monitorButton}${c.error ? `<details class="card-error" data-error="${c.id}" ${expanded.has(String(c.id))?'open':''}><summary>查看扫描错误</summary><p>${esc(c.error)}</p></details>` : ''}</article>`;
   }).join('');
@@ -256,7 +256,7 @@ async function importCookieFile(file) {
     state.settings.cookies_file = result.cookies_file;
     $('#settings-form').elements.cookies_file.value = result.cookies_file;
     settingsDirty = wasDirty;
-    const auth = result.auth_detected ? '已识别登录 Cookies' : '未识别常见登录项，仍可尝试下载';
+    const auth = result.auth_detected ? '检测到登录 Cookie 条目，实际有效性需通过视频解析确认' : '未识别常见登录项，可能无法访问需要登录的视频';
     status.textContent = `导入成功：保留 ${result.kept} 条，忽略 ${result.skipped} 条；${auth}`;
     toast(result.retried_jobs ? `Cookies 已启用，${result.retried_jobs} 个验证失败任务已重新排队` : 'Cookies 已导入并自动启用');
     await refresh();

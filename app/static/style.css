@@ -22,3 +22,6 @@ dialog{border:1px solid #e7eade;border-radius:16px;width:570px;max-width:calc(10
 .manual-preview-heading p{margin-bottom:26px}
 .manual-panel .form-footer{margin-top:28px}
 @media(max-width:650px){.manual-panel{padding:24px}.manual-panel .path-input{flex-wrap:wrap}.manual-panel .path-input button{width:100%}}
+.cookie-guidance{margin:14px 0 0;color:#667b6d;font-size:.88rem;line-height:1.65}
+.cookie-guidance code{font-size:.92em;overflow-wrap:anywhere}
+.cookie-guidance a{color:#a95336;text-decoration:underline}

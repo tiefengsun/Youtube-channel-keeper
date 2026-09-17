@@ -197,8 +197,12 @@ class Store:
 
     def scan_error(self, channel_id, error):
         with self.connect() as db:
-            db.execute('''UPDATE channels SET scanning=0,error=?,next_scan=? + MIN(interval_minutes,15)*60
-                WHERE id=?''', (error[-2000:], time.time(), channel_id))
+            if error.startswith('Cookies 已失效'):
+                db.execute('UPDATE channels SET scanning=0,error=?,next_scan=? WHERE id=?',
+                           (error[-2000:], 32503680000, channel_id))
+            else:
+                db.execute('''UPDATE channels SET scanning=0,error=?,next_scan=? + MIN(interval_minutes,15)*60
+                    WHERE id=?''', (error[-2000:], time.time(), channel_id))
 
     def jobs(self, limit=300):
         with self.connect() as db:
@@ -274,13 +278,13 @@ class Store:
             job_cursor = db.execute('''UPDATE jobs SET status='queued',attempts=0,available_at=0,
                 error='',progress=0,stage='Cookies 已更新，等待重试',speed='',eta=''
                 WHERE status IN ('failed','retrying') AND
-                (error LIKE '%confirm you%bot%' OR error LIKE '%要求登录验证%')''')
+                (error LIKE '%confirm you%bot%' OR error LIKE '%要求登录验证%' OR error LIKE 'Cookies 已失效%')''')
             manual_cursor = db.execute('''UPDATE manual_jobs SET status='queued',attempts=0,available_at=0,
                 error='',progress=0,stage='Cookies 已更新，等待重试',speed='',eta=''
                 WHERE status IN ('failed','retrying') AND
-                (error LIKE '%confirm you%bot%' OR error LIKE '%要求登录验证%')''')
+                (error LIKE '%confirm you%bot%' OR error LIKE '%要求登录验证%' OR error LIKE 'Cookies 已失效%')''')
             db.execute('''UPDATE channels SET next_scan=0,error=''
-                WHERE enabled=1 AND (error LIKE '%confirm you%bot%' OR error LIKE '%要求登录验证%')''')
+                WHERE enabled=1 AND (error LIKE '%confirm you%bot%' OR error LIKE '%要求登录验证%' OR error LIKE 'Cookies 已失效%')''')
             return job_cursor.rowcount + manual_cursor.rowcount
 
     def stats(self):
