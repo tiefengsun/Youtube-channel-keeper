@@ -12,6 +12,7 @@
   <div class="workspace-label">你的私人视频资料库</div>
   <nav aria-label="主导航">
     <button class="nav-item active" data-view="channels"><span>▦</span>频道订阅<span id="nav-count" class="nav-count">0</span></button>
+    <button class="nav-item" data-view="manual"><span>▷</span>单条视频</button>
     <button class="nav-item" data-view="downloads"><span>↓</span>下载任务<span id="queue-count" class="nav-count">0</span></button>
     <button class="nav-item" data-view="settings"><span>⚙</span>偏好设置</button>
   </nav>
@@ -36,6 +37,10 @@
       <div id="channel-grid" class="channel-grid"></div>
       <div class="footnote"><span>◷</span> 扫描与下载在运行服务的电脑或服务器后台进行。关闭浏览器后仍会继续，关闭服务或关机后暂停。</div>
     </section>
+    <section class="page" id="view-manual" hidden>
+      <div class="page-heading"><div><div class="eyebrow">SAVE A VIDEO ON DEMAND</div><h1>看到喜欢的，马上收藏<span class="accent">。</span></h1><p>粘贴单条 YouTube 视频链接，查看可用画质后选择下载。</p></div></div>
+      <div class="panel manual-panel"><form id="manual-inspect-form"><label>视频链接<div class="path-input"><input name="url" type="url" required placeholder="https://www.youtube.com/watch?v=…" autocomplete="off"><button class="button primary" type="submit" id="inspect-video">解析视频</button></div></label></form><p id="manual-error" class="inline-error" role="alert" hidden></p><div id="manual-preview" hidden><div class="manual-preview-heading"><span class="pill">已解析</span><h2 id="manual-title"></h2><p id="manual-meta" class="muted"></p></div><form id="manual-download-form"><div class="form-row"><label>视频画质<select name="resolution" required></select></label><label>文件格式<select name="format"><option value="mp4">MP4 · 通用视频</option><option value="mkv">MKV · 更多编码</option><option value="webm">WebM · 网页视频</option></select></label></div><p id="manual-destination" class="muted"></p><div class="form-footer"><span class="muted">下载会在后台进行，进度可在下载任务中查看。</span><button class="button primary" type="submit">加入下载队列 ↓</button></div></form></div></div>
+    </section>
     <section class="page" id="view-downloads" hidden>
       <div class="page-heading"><div><div class="eyebrow">A GROWING PERSONAL ARCHIVE</div><h1>每一份收藏，都有迹可循<span class="accent">。</span></h1><p>查看下载进度、重试失败任务，找到已保存的文件。</p></div><button class="button" id="pause-scheduler">暂停调度</button></div>
       <div class="banner">音频和视频可能分段下载，进度会随分段重新计算；合并完成后才标记为已完成。暂停调度只停止启动新任务。</div>
@@ -46,7 +51,8 @@
       <div class="page-heading"><div><div class="eyebrow">MAKE IT YOURS</div><h1>按照你的习惯收藏<span class="accent">。</span></h1><p>管理文件保存位置、网络连接与自动重试。</p></div></div>
       <div class="settings-layout"><form id="settings-form" class="panel">
         <div class="panel-heading"><h2>下载与网络</h2><p>修改后对新开始的扫描与下载生效。</p></div>
-        <label>视频保存目录<div class="path-input"><input name="output_dir" required placeholder="Windows: D:\Videos　Ubuntu: /mnt/videos"><button class="button" id="browse-output" type="button">选择路径…</button></div><small>可以手动输入，或浏览运行服务的电脑/服务器目录。支持 Windows 路径和 Ubuntu 的 `/home`、`/mnt` 等路径。</small></label>
+        <label>频道视频保存目录<div class="path-input"><input name="output_dir" required placeholder="Windows: D:\Videos　Ubuntu: /mnt/videos"><button class="button" id="browse-output" type="button">选择路径…</button></div><small>自动订阅的视频按频道名分文件夹保存。</small></label>
+        <label>单条视频保存目录<div class="path-input"><input name="manual_output_dir" required placeholder="Windows: D:\ManualVideos　Ubuntu: /mnt/manual-videos"><button class="button" id="browse-manual-output" type="button">选择路径…</button></div><small>在“单条视频”页面粘贴链接下载的文件会直接保存到这里。可输入或浏览运行服务的电脑/服务器目录。</small></label>
         <label>网络代理 <span class="optional">可选</span><input name="proxy" placeholder="http://127.0.0.1:7890" autocomplete="off"><small>支持 HTTP、HTTPS、SOCKS5。留空时使用系统环境代理配置。</small></label>
         <div class="cookie-import"><label for="cookies-file-path">Cookies 文件 <span class="optional">可选</span></label><div class="cookie-path-input" id="cookie-drop-zone"><input id="cookies-file-path" name="cookies_file" placeholder="填写路径，或把 cookies.txt 拖到这里" autocomplete="off"><button class="button" id="import-cookies" type="button">导入…</button><span class="cookie-drop-hint">松开即可导入</span></div><input id="cookie-file-picker" type="file" accept=".txt,text/plain" hidden><small>支持手动填写 Netscape 文件路径、点击导入，或直接拖入 Get cookies.txt 导出的 `.txt` 文件。</small><div id="cookie-import-status" class="muted" aria-live="polite"></div></div>
         <label>失败自动重试次数<select name="retries"><option value="0">不自动重试</option><option value="1">1 次</option><option value="3">3 次（推荐）</option><option value="5">5 次</option><option value="10">10 次</option></select><small>首次失败等待 1 分钟，之后逐次增加，最长等待 1 小时。</small></label>

@@ -47,11 +47,16 @@ def base_command(settings):
 
 
 def download_command(job, settings):
-    root = Path(settings['output_dir']).resolve()
-    folder = channel_directory(root, job.get('channel_name'), job['channel_id'])
+    if job.get('kind') == 'manual':
+        folder = Path(job['output_dir']).resolve()
+        output = f"%(title).120B [%(id)s] [{job['resolution']}p].%(ext)s"
+    else:
+        root = Path(settings['output_dir']).resolve()
+        folder = channel_directory(root, job.get('channel_name'), job['channel_id'])
+        output = '%(title).120B [%(id)s].%(ext)s'
     args = base_command(settings) + ['--no-playlist', '--no-simulate', '--newline', '--progress',
         '--continue', '--windows-filenames', '--trim-filenames', '180',
-        '--paths', str(folder), '--output', '%(title).120B [%(id)s].%(ext)s',
+        '--paths', str(folder), '--output', output,
         '--progress-template', 'download:__PROGRESS__%(progress)j',
         '--print', 'after_move:__FILE__%(filepath)j']
     fmt = job['format']
@@ -110,6 +115,7 @@ class Engine:
         self.actions = threading.RLock()
         self.threads = []
         self.active_job = None
+        self.active_kind = 'channel'
         self.cancel_event = threading.Event()
 
     def start(self):
@@ -134,6 +140,31 @@ class Engine:
     def scan_channel(self, channel, settings):
         with isolated_cookies(settings) as process_settings:
             return self._scan_channel(channel, process_settings)
+
+    def inspect_video(self, url, settings):
+        with isolated_cookies(settings) as process_settings:
+            process = self.spawn(base_command(process_settings) + [
+                '--dump-single-json', '--skip-download', '--no-playlist', '--', url])
+            try:
+                try:
+                    stdout, stderr = process.communicate(timeout=120)
+                except subprocess.TimeoutExpired:
+                    raise RuntimeError('解析视频超过 2 分钟，请检查网络或代理')
+                if process.returncode:
+                    raise RuntimeError(stderr.strip()[-2000:] or '视频信息解析失败')
+                data = json.loads(stdout)
+                if data.get('id') != url.rsplit('=', 1)[-1]:
+                    raise RuntimeError('返回的视频信息与链接不一致')
+                heights = sorted({f.get('height') for f in data.get('formats', [])
+                    if isinstance(f, dict) and f.get('vcodec') not in (None, 'none')
+                    and isinstance(f.get('height'), int) and 1 <= f['height'] <= 4320}, reverse=True)
+                if not heights:
+                    raise RuntimeError('未读取到可下载的视频画质，请确认视频可访问')
+                return {'url': url, 'video_id': data['id'], 'title': data.get('title') or data['id'],
+                    'uploader': data.get('uploader') or data.get('channel') or '',
+                    'duration': data.get('duration'), 'qualities': heights}
+            finally:
+                kill_process(process)
 
     def _scan_channel(self, channel, settings):
         args = base_command(settings) + ['--flat-playlist', '--dump-single-json',
@@ -203,6 +234,15 @@ class Engine:
         with isolated_cookies(settings) as process_settings:
             return self._download(job, process_settings)
 
+    def get_job(self, job):
+        return self.store.manual_job(job['id']) if job.get('kind') == 'manual' else self.store.job(job['id'])
+
+    def update_job(self, job, **fields):
+        if job.get('kind') == 'manual':
+            self.store.update_manual_job(job['id'], **fields)
+        else:
+            self.store.update_job(job['id'], **fields)
+
     def _download(self, job, settings):
         deps = diagnostics()
         if not deps['ffmpeg'] or not deps['ffprobe']:
@@ -227,7 +267,7 @@ class Engine:
         filepath = ''
         try:
             while True:
-                current = self.store.job(job['id'])
+                current = self.get_job(job)
                 if self.stop_event.is_set() or self.cancel_event.is_set() or not current or current['status'] == 'cancelled':
                     raise Interrupted()
                 if time.monotonic() - start > 43200:
@@ -250,7 +290,7 @@ class Engine:
                         progress = min(99, 100 * (p.get('downloaded_bytes') or 0) / total) if total else 0
                         speed = f"{p['speed'] / 1048576:.1f} MB/s" if p.get('speed') else ''
                         eta = f"{int(p['eta'])} 秒" if p.get('eta') is not None else ''
-                        self.store.update_job(job['id'], progress=progress, speed=speed, eta=eta,
+                        self.update_job(job, progress=progress, speed=speed, eta=eta,
                             stage='合并 / 转封装' if p.get('status') == 'finished' else '下载音视频分段')
                     except (ValueError, TypeError, KeyError):
                         pass
@@ -260,7 +300,8 @@ class Engine:
             if process.returncode:
                 raise RuntimeError('\n'.join(tail)[-2000:] or 'yt-dlp 下载失败')
             result = Path(filepath).resolve() if filepath else None
-            if not result or not result.is_file() or not result.is_relative_to(Path(settings['output_dir']).resolve()):
+            root = job['output_dir'] if job.get('kind') == 'manual' else settings['output_dir']
+            if not result or not result.is_file() or not result.is_relative_to(Path(root).resolve()):
                 raise RuntimeError('下载进程结束，但未找到最终文件，请查看下载目录并重试')
             return str(result)
         finally:
@@ -275,32 +316,35 @@ class Engine:
                 with self.actions:
                     settings = self.store.settings()
                     if not settings['paused']:
-                        job = self.store.claim_job()
+                        job = self.store.claim_manual_job() or self.store.claim_job()
                         if job:
+                            job.setdefault('kind', 'channel')
                             self.active_job = job['id']
+                            self.active_kind = job['kind']
                             self.cancel_event.clear()
                 if job:
                     filepath = self.download(job, settings)
                     with self.actions:
-                        current = self.store.job(job['id'])
+                        current = self.get_job(job)
                         if current and current['status'] == 'downloading':
-                            self.store.update_job(job['id'], status='completed', progress=100,
+                            self.update_job(job, status='completed', progress=100,
                                 stage='已完成', filepath=filepath, finished_at=time.time(), speed='', eta='')
             except Interrupted:
                 with self.actions:
-                    if job and (current := self.store.job(job['id'])) and current['status'] == 'downloading':
-                        self.store.update_job(job['id'], status='queued', stage='等待恢复', progress=0,
+                    if job and (current := self.get_job(job)) and current['status'] == 'downloading':
+                        self.update_job(job, status='queued', stage='等待恢复', progress=0,
                                               attempts=max(0, job['attempts'] - 1))
             except Exception as exc:
                 log.warning('Download failed: %s', self.safe_error(exc, settings))
                 with self.actions:
-                    if job and (current := self.store.job(job['id'])) and current['status'] == 'downloading':
+                    if job and (current := self.get_job(job)) and current['status'] == 'downloading':
                         retry = job['attempts'] <= settings['retries']
-                        self.store.update_job(job['id'], status='retrying' if retry else 'failed',
+                        self.update_job(job, status='retrying' if retry else 'failed',
                             stage='等待自动重试' if retry else '下载失败', speed='', eta='',
                             available_at=time.time() + min(3600, 60 * 2 ** (job['attempts'] - 1)),
                             error=self.safe_error(exc, settings))
             finally:
                 with self.actions:
                     self.active_job = None
+                    self.active_kind = 'channel'
             self.stop_event.wait(1)

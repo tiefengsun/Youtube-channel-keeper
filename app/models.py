@@ -28,6 +28,39 @@ def channel_url(value: str) -> str:
     return 'https://www.youtube.com' + path
 
 
+def video_url(value: str) -> str:
+    from urllib.parse import parse_qs
+    parts = urlsplit(value.strip())
+    if parts.scheme != 'https' or parts.username or parts.password or parts.port not in (None, 443):
+        raise ValueError('请填写 HTTPS YouTube 视频链接')
+    if parts.hostname in ('youtube.com', 'www.youtube.com', 'm.youtube.com'):
+        if parts.path == '/watch':
+            video_id = parse_qs(parts.query).get('v', [''])[0]
+        elif parts.path.startswith(('/shorts/', '/live/')):
+            video_id = parts.path.split('/')[2]
+        else:
+            video_id = ''
+    elif parts.hostname == 'youtu.be':
+        video_id = parts.path.strip('/')
+    else:
+        video_id = ''
+    if not re.fullmatch(r'[A-Za-z0-9_-]{11}', video_id):
+        raise ValueError('只支持单条 YouTube 视频链接，不支持频道或播放列表')
+    return 'https://www.youtube.com/watch?v=' + video_id
+
+
+class ManualInspect(BaseModel):
+    url: str
+    _url = field_validator('url')(video_url)
+
+
+class ManualDownload(BaseModel):
+    url: str
+    format: Literal['mp4', 'mkv', 'webm'] = 'mp4'
+    resolution: int = Field(ge=1, le=4320)
+    _url = field_validator('url')(video_url)
+
+
 class ChannelCreate(BaseModel):
     url: str
     name: str = Field(default='', max_length=120)
@@ -79,12 +112,13 @@ class CookieImport(BaseModel):
 
 class Settings(BaseModel):
     output_dir: str = str(Path(__file__).resolve().parents[1] / 'downloads')
+    manual_output_dir: str = str(Path(__file__).resolve().parents[1] / 'manual-downloads')
     proxy: str = ''
     cookies_file: str = ''
     retries: int = Field(default=3, ge=0, le=10)
     paused: bool = False
 
-    @field_validator('output_dir')
+    @field_validator('output_dir', 'manual_output_dir')
     @classmethod
     def output_path(cls, value):
         if not value.strip() or '\x00' in value:

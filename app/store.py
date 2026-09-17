@@ -47,6 +47,16 @@ class Store:
                     filepath TEXT NOT NULL DEFAULT '', UNIQUE(channel_id, video_id)
                 );
                 CREATE INDEX IF NOT EXISTS jobs_queue ON jobs(status, available_at);
+                CREATE TABLE IF NOT EXISTS manual_jobs (
+                    id INTEGER PRIMARY KEY, video_id TEXT NOT NULL, title TEXT NOT NULL,
+                    uploader TEXT NOT NULL DEFAULT '', format TEXT NOT NULL, resolution INTEGER NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'queued', progress REAL NOT NULL DEFAULT 0,
+                    stage TEXT NOT NULL DEFAULT '', speed TEXT NOT NULL DEFAULT '', eta TEXT NOT NULL DEFAULT '',
+                    attempts INTEGER NOT NULL DEFAULT 0, available_at REAL NOT NULL DEFAULT 0,
+                    created_at REAL NOT NULL, finished_at REAL, error TEXT NOT NULL DEFAULT '',
+                    filepath TEXT NOT NULL DEFAULT '', output_dir TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS manual_jobs_queue ON manual_jobs(status, available_at);
             ''')
             db.execute('INSERT OR IGNORE INTO settings VALUES (1, ?)', (Settings().model_dump_json(),))
             if not db.execute('SELECT 1 FROM admin_auth WHERE id=1').fetchone():
@@ -66,7 +76,7 @@ class Store:
 
     def settings(self):
         with self.connect() as db:
-            return json.loads(db.execute('SELECT value FROM settings WHERE id=1').fetchone()[0])
+            return {**Settings().model_dump(), **json.loads(db.execute('SELECT value FROM settings WHERE id=1').fetchone()[0])}
 
     def save_settings(self, settings):
         with self.connect() as db:
@@ -221,19 +231,63 @@ class Store:
             db.execute(f"UPDATE jobs SET {','.join(k+'=?' for k in fields)} WHERE id=?",
                        (*fields.values(), job_id))
 
+    def manual_jobs(self, limit=300):
+        with self.connect() as db:
+            return [dict(r) for r in db.execute('''SELECT * FROM manual_jobs
+                ORDER BY CASE WHEN status='downloading' THEN 0 ELSE 1 END,id DESC LIMIT ?''', (limit,))]
+
+    def manual_job(self, job_id):
+        with self.connect() as db:
+            row = db.execute('SELECT * FROM manual_jobs WHERE id=?', (job_id,)).fetchone()
+            return dict(row) if row else None
+
+    def add_manual_job(self, video_id, title, uploader, fmt, resolution, output_dir):
+        with self.connect() as db:
+            cur = db.execute('''INSERT INTO manual_jobs
+                (video_id,title,uploader,format,resolution,created_at,output_dir)
+                VALUES (?,?,?,?,?,?,?)''', (video_id, title[:500], uploader[:200], fmt,
+                    resolution, time.time(), output_dir))
+            return cur.lastrowid
+
+    def claim_manual_job(self):
+        with self.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            row = db.execute('''SELECT * FROM manual_jobs WHERE status IN ('queued','retrying')
+                AND available_at<=? ORDER BY id LIMIT 1''', (time.time(),)).fetchone()
+            if row:
+                db.execute("UPDATE manual_jobs SET status='downloading',attempts=attempts+1,error='',stage='正在解析',progress=0 WHERE id=?", (row['id'],))
+                row = dict(row)
+                row['attempts'] += 1
+                row['kind'] = 'manual'
+            return row
+
+    def update_manual_job(self, job_id, **fields):
+        allowed = {'status', 'progress', 'stage', 'speed', 'eta', 'available_at', 'finished_at', 'error', 'filepath', 'attempts'}
+        if not fields or not fields.keys() <= allowed:
+            raise ValueError('Invalid job fields')
+        with self.connect() as db:
+            db.execute(f"UPDATE manual_jobs SET {','.join(k+'=?' for k in fields)} WHERE id=?",
+                       (*fields.values(), job_id))
+
     def retry_auth_failures(self):
         with self.connect() as db:
             job_cursor = db.execute('''UPDATE jobs SET status='queued',attempts=0,available_at=0,
                 error='',progress=0,stage='Cookies 已更新，等待重试',speed='',eta=''
                 WHERE status IN ('failed','retrying') AND
                 (error LIKE '%confirm you%bot%' OR error LIKE '%要求登录验证%')''')
+            manual_cursor = db.execute('''UPDATE manual_jobs SET status='queued',attempts=0,available_at=0,
+                error='',progress=0,stage='Cookies 已更新，等待重试',speed='',eta=''
+                WHERE status IN ('failed','retrying') AND
+                (error LIKE '%confirm you%bot%' OR error LIKE '%要求登录验证%')''')
             db.execute('''UPDATE channels SET next_scan=0,error=''
                 WHERE enabled=1 AND (error LIKE '%confirm you%bot%' OR error LIKE '%要求登录验证%')''')
-            return job_cursor.rowcount
+            return job_cursor.rowcount + manual_cursor.rowcount
 
     def stats(self):
         with self.connect() as db:
             counts = dict(db.execute('SELECT status,COUNT(*) FROM jobs GROUP BY status').fetchall())
+            for status, count in db.execute('SELECT status,COUNT(*) FROM manual_jobs GROUP BY status'):
+                counts[status] = counts.get(status, 0) + count
             return {'channels': db.execute('SELECT COUNT(*) FROM channels').fetchone()[0],
                     'completed': counts.get('completed', 0),
                     'pending': sum(counts.get(s, 0) for s in ('queued', 'retrying', 'downloading')),
@@ -243,3 +297,4 @@ class Store:
         with self.connect() as db:
             db.execute('UPDATE channels SET scanning=0')
             db.execute("UPDATE jobs SET status='queued',progress=0,stage='重启后恢复',attempts=MAX(0,attempts-1) WHERE status='downloading'")
+            db.execute("UPDATE manual_jobs SET status='queued',progress=0,stage='重启后恢复',attempts=MAX(0,attempts-1) WHERE status='downloading'")

@@ -70,3 +70,26 @@ def test_real_download_and_conversion(fmt, media_server, tmp_path, monkeypatch):
         assert all(s['codec_type'] == 'audio' for s in streams)
     else:
         assert any(s.get('height') == 144 for s in streams)
+
+
+def test_real_manual_download_uses_independent_folder(media_server, tmp_path, monkeypatch):
+    folder, url = media_server
+    info = {'id':'abcdefghijk','title':'手动视频','extractor':'generic','extractor_key':'Generic',
+            'webpage_url':url+'/sample.mp4','duration':1,
+            'formats':[{'format_id':'mp4','url':url+'/sample.mp4','ext':'mp4','height':144,'width':256,
+                'vcodec':'h264','acodec':'aac','protocol':'http'}]}
+    info_file = tmp_path / 'manual-info.json'
+    info_file.write_text(json.dumps(info), encoding='utf-8')
+    original_command = engine_module.download_command
+    monkeypatch.setattr(engine_module, 'download_command',
+        lambda job, settings: original_command(job, settings)[:-2] + ['--load-info-json', str(info_file)])
+    store = Store(tmp_path / 'manual.db')
+    target = tmp_path / '手动保存'
+    target.mkdir()
+    job_id = store.add_manual_job('abcdefghijk', '手动视频', '作者', 'mp4', 144, str(target))
+    job = store.claim_manual_job()
+    assert job['id'] == job_id
+    result = Path(Engine(store).download(job, Settings(output_dir=str(tmp_path / '频道保存')).model_dump()))
+    assert result.parent == target
+    assert '[144p]' in result.name
+    assert result.stat().st_size > 100

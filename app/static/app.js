@@ -2,7 +2,7 @@
 const $ = (q, root = document) => root.querySelector(q);
 const $$ = (q, root = document) => [...root.querySelectorAll(q)];
 const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-let state, editId = null, deleteId = null, channelFilter = 'all', jobFilter = 'all', settingsDirty = false, authDirty = false;
+let state, editId = null, deleteId = null, channelFilter = 'all', jobFilter = 'all', settingsDirty = false, authDirty = false, inspectedVideo = null;
 let toastTimer, refreshBusy = false, lastChannels = '', lastJobs = '';
 const pendingChannels = new Set();
 const colors = [['#eaeedf','#748958'],['#f5e9df','#ae845f'],['#e6eef0','#72979b'],['#ede7f2','#9a81ac'],['#f0ebdb','#a48f57']];
@@ -13,8 +13,8 @@ function toast(message, error = false) {
   const el = $('#toast'); el.textContent = message; el.classList.toggle('error', error); el.hidden = false;
   toastTimer = setTimeout(() => el.hidden = true, error ? 7000 : 3500);
 }
-async function api(path, method = 'GET', body) {
-  const response = await fetch('/api' + path, {method, headers:{'Content-Type':'application/json','X-Local-Request':'1'}, body:body === undefined ? undefined : JSON.stringify(body), signal:AbortSignal.timeout(20000)});
+async function api(path, method = 'GET', body, timeout = 20000) {
+  const response = await fetch('/api' + path, {method, headers:{'Content-Type':'application/json','X-Local-Request':'1'}, body:body === undefined ? undefined : JSON.stringify(body), signal:AbortSignal.timeout(timeout)});
   const data = await response.json();
   if (!response.ok) {
     let error = data.detail || '请求失败';
@@ -29,7 +29,7 @@ const quality = c => ['mp3','m4a'].includes(c.format) ? '仅音频' : c.resoluti
 function showView(view) {
   $$('.page').forEach(el => el.hidden = el.id !== 'view-' + view);
   $$('.nav-item').forEach(el => el.classList.toggle('active', el.dataset.view === view));
-  $('#page-name').textContent = {channels:'频道订阅',downloads:'下载任务',settings:'偏好设置'}[view];
+  $('#page-name').textContent = {channels:'频道订阅',manual:'单条视频',downloads:'下载任务',settings:'偏好设置'}[view];
   location.hash = view;
 }
 function empty(title, description, action = '') {
@@ -58,14 +58,16 @@ function renderChannels(force = false) {
   }).join('');
 }
 function renderJobs(force = false) {
-  const signature = JSON.stringify([state.jobs, jobFilter]);
+  const signature = JSON.stringify([state.jobs, state.manual_jobs, jobFilter]);
   if (!force && signature === lastJobs) return;
   lastJobs = signature;
-  const jobs = state.jobs.filter(j => jobFilter === 'all' || (jobFilter === 'active' ? ['queued','retrying','downloading'].includes(j.status) : jobFilter === 'failed' ? ['failed','cancelled'].includes(j.status) : j.status === jobFilter));
+  const allJobs = [...state.jobs.map(j => ({...j,kind:'channel'})),...(state.manual_jobs||[]).map(j => ({...j,kind:'manual',channel_name:'单条视频'}))].sort((a,b) => (b.status==='downloading') - (a.status==='downloading') || b.created_at - a.created_at);
+  const jobs = allJobs.filter(j => jobFilter === 'all' || (jobFilter === 'active' ? ['queued','retrying','downloading'].includes(j.status) : jobFilter === 'failed' ? ['failed','cancelled'].includes(j.status) : j.status === jobFilter));
   const expanded = new Set($$('#job-list details[open]').map(el => el.dataset.error));
   $('#job-list').innerHTML = jobs.length ? jobs.map(j => {
     const active = ['queued','downloading','retrying'].includes(j.status);
-    return `<article class="job-card"><div class="video-icon">${['mp3','m4a'].includes(j.format)?'♫':'▷'}</div><div><a class="job-title" href="https://www.youtube.com/watch?v=${esc(j.video_id)}" target="_blank" rel="noreferrer">${esc(j.title)}</a><div class="job-meta"><span>${esc(j.channel_name)}</span><span>${j.format.toUpperCase()} · ${quality(j)}</span><span>${timeText(j.created_at)}</span><span>已尝试 ${j.attempts} 次</span></div>${j.status === 'downloading' ? `<div class="progress"><span style="width:${j.progress}%"></span></div><div class="progress-label">${esc(j.stage)} · ${j.progress.toFixed(1)}% ${esc(j.speed)} ${j.eta?'· 剩余 '+esc(j.eta):''}</div>` : ''}${j.status === 'retrying' ? `<div class="progress-label">计划重试：${timeText(j.available_at)}</div>` : ''}${j.filepath ? `<div class="filepath">${esc(j.filepath)}</div>`:''}${j.error?`<details class="card-error" data-error="${j.id}" ${expanded.has(String(j.id))?'open':''}><summary>查看失败原因</summary><p>${esc(j.error)}</p></details>`:''}</div><div class="job-controls"><span class="pill ${j.status==='failed'?'error':j.status==='cancelled'?'paused':''}">${statuses[j.status]||esc(j.status)}</span>${active?`<button class="button small" data-job-action="cancel" data-id="${j.id}">取消</button>`:''}${['failed','cancelled','retrying'].includes(j.status)?`<button class="button small" data-job-action="retry" data-id="${j.id}">重试</button>`:''}${j.status==='completed'?`<button class="button small" data-job-action="open-folder" data-id="${j.id}">打开文件夹 ↗</button><a class="button small" href="/api/jobs/${j.id}/file">获取文件 ↓</a>`:''}</div></article>`;
+    const path = j.kind === 'manual' ? `/manual/jobs/${j.id}` : `/jobs/${j.id}`;
+    return `<article class="job-card"><div class="video-icon">${['mp3','m4a'].includes(j.format)?'♫':'▷'}</div><div><a class="job-title" href="https://www.youtube.com/watch?v=${esc(j.video_id)}" target="_blank" rel="noreferrer">${esc(j.title)}</a><div class="job-meta"><span>${esc(j.channel_name)}</span><span>${j.format.toUpperCase()} · ${quality(j)}</span><span>${timeText(j.created_at)}</span><span>已尝试 ${j.attempts} 次</span></div>${j.status === 'downloading' ? `<div class="progress"><span style="width:${j.progress}%"></span></div><div class="progress-label">${esc(j.stage)} · ${j.progress.toFixed(1)}% ${esc(j.speed)} ${j.eta?'· 剩余 '+esc(j.eta):''}</div>` : ''}${j.status === 'retrying' ? `<div class="progress-label">计划重试：${timeText(j.available_at)}</div>` : ''}${j.filepath ? `<div class="filepath">${esc(j.filepath)}</div>`:''}${j.error?`<details class="card-error" data-error="${j.kind}:${j.id}" ${expanded.has(`${j.kind}:${j.id}`)?'open':''}><summary>查看失败原因</summary><p>${esc(j.error)}</p></details>`:''}</div><div class="job-controls"><span class="pill ${j.status==='failed'?'error':j.status==='cancelled'?'paused':''}">${statuses[j.status]||esc(j.status)}</span>${active?`<button class="button small" data-job-action="cancel" data-kind="${j.kind}" data-id="${j.id}">取消</button>`:''}${['failed','cancelled','retrying'].includes(j.status)?`<button class="button small" data-job-action="retry" data-kind="${j.kind}" data-id="${j.id}">重试</button>`:''}${j.status==='completed'?`<button class="button small" data-job-action="open-folder" data-kind="${j.kind}" data-id="${j.id}">打开文件夹 ↗</button><a class="button small" href="/api${path}/file">获取文件 ↓</a>`:''}</div></article>`;
   }).join('') : empty('这里暂时没有下载任务','频道发现新视频后会自动加入队列。默认首次扫描只建立记录；添加频道时也可以选择先下载最近几条。');
 }
 function renderSettings() {
@@ -84,6 +86,7 @@ function renderSettings() {
   $('#pause-scheduler').textContent = state.settings.paused ? '▶ 恢复调度' : 'Ⅱ 暂停调度';
   $('#default-auth-banner').hidden = !state.auth?.must_change;
   if (!authDirty && state.auth) $('#auth-form').elements.username.value = state.auth.username;
+  $('#manual-destination').textContent = '保存位置：' + state.settings.manual_output_dir;
 }
 async function refresh() {
   if (refreshBusy) return;
@@ -226,7 +229,8 @@ $('#scan-all').addEventListener('click', async e => {
 $('#job-list').addEventListener('click', async e => {
   const b = e.target.closest('[data-job-action]'); if (!b) return; b.disabled = true;
   try {
-    await api('/jobs/' + b.dataset.id + '/' + b.dataset.jobAction,'POST');
+    const path = b.dataset.kind === 'manual' && b.dataset.jobAction !== 'open-folder' ? '/manual/jobs/' + b.dataset.id + '/action/' + b.dataset.jobAction : (b.dataset.kind === 'manual' ? '/manual/jobs/' : '/jobs/') + b.dataset.id + '/' + b.dataset.jobAction;
+    await api(path,'POST');
     const messages = {retry:'任务已重新加入队列',cancel:'任务已取消','open-folder':'已打开文件所在目录'};
     toast(messages[b.dataset.jobAction]);
     if (b.dataset.jobAction !== 'open-folder') await refresh();
@@ -275,7 +279,7 @@ cookieZone.addEventListener('drop', async e => {
   await importCookieFile(files[0]);
 });
 
-let directoryState = null;
+let directoryState = null, directoryTarget = 'output_dir';
 async function loadDirectories(path) {
   const list = $('#directory-list'), error = $('#directory-error');
   list.innerHTML = '<div class="muted directory-loading">正在读取目录…</div>'; error.hidden = true;
@@ -291,14 +295,19 @@ async function loadDirectories(path) {
   }
 }
 $('#browse-output').addEventListener('click', async () => {
+  directoryTarget = 'output_dir';
   $('#directory-dialog').showModal(); await loadDirectories($('#settings-form').elements.output_dir.value);
+});
+$('#browse-manual-output').addEventListener('click', async () => {
+  directoryTarget = 'manual_output_dir';
+  $('#directory-dialog').showModal(); await loadDirectories($('#settings-form').elements.manual_output_dir.value);
 });
 $('#directory-up').addEventListener('click', () => { if (directoryState?.parent) loadDirectories(directoryState.parent); });
 $('#directory-roots').addEventListener('click', e => { const b=e.target.closest('[data-root]'); if (b) loadDirectories(b.dataset.root); });
 $('#directory-list').addEventListener('click', e => { const b=e.target.closest('[data-path]'); if (b) loadDirectories(b.dataset.path); });
 $('#select-directory').addEventListener('click', () => {
   if (!directoryState) return;
-  $('#settings-form').elements.output_dir.value = directoryState.current;
+  $('#settings-form').elements[directoryTarget].value = directoryState.current;
   settingsDirty = true; $('#settings-dirty').textContent = '已选择目录，请保存设置';
   $('#directory-dialog').close();
 });
@@ -306,7 +315,7 @@ $('#settings-form').addEventListener('submit', async e => {
   e.preventDefault(); if (!state) return;
   const f = e.currentTarget, b = $('button[type=submit]',f); b.disabled = true;
   try {
-    await api('/settings','PUT',{...state.settings,output_dir:f.elements.output_dir.value,proxy:f.elements.proxy.value,cookies_file:f.elements.cookies_file.value,retries:Number(f.elements.retries.value)});
+    await api('/settings','PUT',{...state.settings,output_dir:f.elements.output_dir.value,manual_output_dir:f.elements.manual_output_dir.value,proxy:f.elements.proxy.value,cookies_file:f.elements.cookies_file.value,retries:Number(f.elements.retries.value)});
     settingsDirty = false; $('#settings-dirty').textContent = ''; toast('设置已保存'); await refresh();
   } catch(e) { toast(e.message,true); }
   finally { b.disabled = false; }
@@ -339,6 +348,30 @@ $('#pause-scheduler').addEventListener('click', async e => {
   finally { b.disabled = false; }
 });
 window.addEventListener('beforeunload', e => { if (settingsDirty || authDirty) { e.preventDefault(); e.returnValue = ''; } });
-window.addEventListener('hashchange', () => { const view = location.hash.slice(1); if (['channels','downloads','settings'].includes(view)) showView(view); });
-showView(['channels','downloads','settings'].includes(location.hash.slice(1)) ? location.hash.slice(1) : 'channels');
+$('#manual-inspect-form').addEventListener('submit', async e => {
+  e.preventDefault(); const b = $('#inspect-video'); b.disabled = true; b.textContent = '正在解析…';
+  $('#manual-error').hidden = true; $('#manual-preview').hidden = true; inspectedVideo = null;
+  try {
+    const result = await api('/manual/inspect','POST',{url:e.currentTarget.elements.url.value.trim()},150000);
+    inspectedVideo = result;
+    $('#manual-title').textContent = result.title;
+    const duration = result.duration ? ` · ${Math.floor(result.duration/60)} 分 ${Math.round(result.duration%60)} 秒` : '';
+    $('#manual-meta').textContent = `${result.uploader || 'YouTube 视频'}${duration} · ${result.qualities.length} 档画质`;
+    $('#manual-download-form').elements.resolution.innerHTML = result.qualities.map(height => `<option value="${height}">${height}p${height>=2160?' · 4K':height>=1440?' · 2K':height>=1080?' · 全高清':height>=720?' · 高清':''}</option>`).join('');
+    $('#manual-preview').hidden = false;
+  } catch(error) { $('#manual-error').textContent = error.name === 'TimeoutError' ? '解析超时，请检查网络或代理' : error.message; $('#manual-error').hidden = false; }
+  finally { b.disabled = false; b.textContent = '解析视频'; }
+});
+$('#manual-inspect-form').elements.url.addEventListener('input', () => { inspectedVideo = null; $('#manual-preview').hidden = true; });
+$('#manual-download-form').addEventListener('submit', async e => {
+  e.preventDefault(); if (!inspectedVideo) return;
+  const f = e.currentTarget, b = $('button[type=submit]', f); b.disabled = true;
+  try {
+    await api('/manual/jobs','POST',{url:inspectedVideo.url,format:f.elements.format.value,resolution:Number(f.elements.resolution.value)});
+    toast('视频已加入下载队列'); await refresh(); showView('downloads');
+  } catch(error) { toast(error.message,true); }
+  finally { b.disabled = false; }
+});
+window.addEventListener('hashchange', () => { const view = location.hash.slice(1); if (['channels','manual','downloads','settings'].includes(view)) showView(view); });
+showView(['channels','manual','downloads','settings'].includes(location.hash.slice(1)) ? location.hash.slice(1) : 'channels');
 refresh(); setInterval(refresh, 3000);

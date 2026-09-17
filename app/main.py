@@ -5,6 +5,7 @@ import ipaddress
 import os
 from pathlib import Path
 import sqlite3
+import time
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Request
@@ -17,7 +18,7 @@ from .engine import Engine, diagnostics
 from .file_actions import open_file_location
 from .filesystem import list_directories
 from .cookies import prepare_youtube_cookies, save_managed_cookies
-from .models import ChannelCreate, ChannelEdit, CookieImport, Settings
+from .models import ChannelCreate, ChannelEdit, CookieImport, Settings, ManualInspect, ManualDownload
 from .store import Store
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -74,6 +75,7 @@ def create_app(data_dir=None, run_engine=True):
     folder = Path(data_dir or os.environ.get('CHANNEL_KEEPER_DATA', ROOT / 'data'))
     store = Store(folder / 'keeper.sqlite3')
     engine = Engine(store)
+    inspected_videos = {}
     lock = InstanceLock(folder / 'instance.lock')
 
     @asynccontextmanager
@@ -138,7 +140,8 @@ def create_app(data_dir=None, run_engine=True):
 
     @app.get('/api/state')
     def state():
-        return {'app_id': 'channel-keeper', 'channels': store.channels(), 'jobs': store.jobs(), 'stats': store.stats(),
+        return {'app_id': 'channel-keeper', 'channels': store.channels(), 'jobs': store.jobs(),
+                'manual_jobs': store.manual_jobs(), 'stats': store.stats(),
                 'settings': store.settings(), 'diagnostics': diagnostics(), 'auth': store.auth_info()}
 
     @app.put('/api/auth')
@@ -190,7 +193,7 @@ def create_app(data_dir=None, run_engine=True):
             c = require_channel(channel_id)
             with store.connect() as db:
                 active = db.execute("SELECT 1 FROM jobs WHERE channel_id=? AND status='downloading'", (channel_id,)).fetchone()
-            running = store.job(engine.active_job) if engine.active_job is not None else None
+            running = store.job(engine.active_job) if engine.active_job is not None and engine.active_kind == 'channel' else None
             if c['scanning'] or active or (running and running['channel_id'] == channel_id):
                 raise HTTPException(409, '请等待频道扫描结束，并取消正在下载的任务后再移除')
             store.remove_channel(channel_id)
@@ -214,15 +217,87 @@ def create_app(data_dir=None, run_engine=True):
     @app.put('/api/settings')
     def settings(data: Settings):
         try:
-            path = Path(data.output_dir)
-            path.mkdir(parents=True, exist_ok=True)
             import tempfile
-            with tempfile.TemporaryFile(dir=path):
-                pass
+            for value in (data.output_dir, data.manual_output_dir):
+                path = Path(value)
+                path.mkdir(parents=True, exist_ok=True)
+                with tempfile.TemporaryFile(dir=path):
+                    pass
         except OSError as exc:
             raise HTTPException(400, f'下载目录无法写入：{exc}')
         store.save_settings(data.model_dump())
         return {'ok': True}
+
+    @app.post('/api/manual/inspect')
+    def inspect_manual_video(data: ManualInspect):
+        try:
+            info = engine.inspect_video(data.url, store.settings())
+        except Exception as exc:
+            raise HTTPException(400, engine.safe_error(exc, store.settings()))
+        with engine.actions:
+            inspected_videos[info['video_id']] = (time.time(), info)
+            for video_id, (created, _) in list(inspected_videos.items()):
+                if created < time.time() - 1800:
+                    inspected_videos.pop(video_id, None)
+        return info
+
+    @app.post('/api/manual/jobs', status_code=201)
+    def add_manual_job(data: ManualDownload):
+        video_id = data.url.rsplit('=', 1)[-1]
+        with engine.actions:
+            cached = inspected_videos.get(video_id)
+            if not cached or cached[0] < time.time() - 1800:
+                raise HTTPException(409, '解析结果已过期，请重新解析视频')
+            info = cached[1]
+            if data.resolution not in info['qualities']:
+                raise HTTPException(400, '所选画质不在该视频的可用画质中，请重新解析')
+            output_dir = store.settings()['manual_output_dir']
+            try:
+                Path(output_dir).mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                raise HTTPException(400, f'手动下载目录无法写入：{exc}')
+            job_id = store.add_manual_job(video_id, info['title'], info['uploader'],
+                data.format, data.resolution, output_dir)
+        return {'id': job_id}
+
+    @app.post('/api/manual/jobs/{job_id}/action/{action}')
+    def manual_job_action(job_id: int, action: str):
+        with engine.actions:
+            job = store.manual_job(job_id)
+            if not job:
+                raise HTTPException(404, '任务不存在')
+            if action == 'retry' and job['status'] in ('failed', 'cancelled', 'retrying'):
+                if engine.active_job == job_id and engine.active_kind == 'manual':
+                    raise HTTPException(409, '下载进程正在停止，请稍候几秒再重试')
+                store.update_manual_job(job_id, status='queued', attempts=0, available_at=0,
+                    error='', progress=0, stage='等待下载', speed='', eta='')
+            elif action == 'cancel' and job['status'] in ('queued', 'retrying', 'downloading'):
+                if engine.active_job == job_id and engine.active_kind == 'manual':
+                    engine.cancel_event.set()
+                store.update_manual_job(job_id, status='cancelled', stage='已取消', speed='', eta='')
+            else:
+                raise HTTPException(409, '当前任务状态不支持此操作')
+        return {'ok': True}
+
+    @app.post('/api/manual/jobs/{job_id}/open-folder')
+    def open_manual_job_folder(job_id: int):
+        job = store.manual_job(job_id)
+        if not job or job['status'] != 'completed' or not job['filepath']:
+            raise HTTPException(404, '文件不存在或任务尚未完成')
+        try:
+            open_file_location(job['filepath'])
+        except ValueError as exc:
+            raise HTTPException(404, str(exc))
+        except (OSError, RuntimeError) as exc:
+            raise HTTPException(503, str(exc))
+        return {'ok': True}
+
+    @app.get('/api/manual/jobs/{job_id}/file')
+    def manual_job_file(job_id: int):
+        job = store.manual_job(job_id)
+        if not job or job['status'] != 'completed' or not job['filepath'] or not Path(job['filepath']).is_file():
+            raise HTTPException(404, '文件不存在或已被移动')
+        return FileResponse(job['filepath'], filename=Path(job['filepath']).name)
 
     @app.post('/api/settings/cookies/import')
     def import_cookies(data: CookieImport):
@@ -259,12 +334,12 @@ def create_app(data_dir=None, run_engine=True):
             if not job:
                 raise HTTPException(404, '任务不存在')
             if action == 'retry' and job['status'] in ('failed', 'cancelled', 'retrying'):
-                if engine.active_job == job_id:
+                if engine.active_job == job_id and engine.active_kind == 'channel':
                     raise HTTPException(409, '下载进程正在停止，请稍候几秒再重试')
                 store.update_job(job_id, status='queued', attempts=0, available_at=0,
                                  error='', progress=0, stage='等待下载', speed='', eta='')
             elif action == 'cancel' and job['status'] in ('queued', 'retrying', 'downloading'):
-                if engine.active_job == job_id:
+                if engine.active_job == job_id and engine.active_kind == 'channel':
                     engine.cancel_event.set()
                 store.update_job(job_id, status='cancelled', stage='已取消', speed='', eta='')
             else:
