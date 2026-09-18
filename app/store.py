@@ -138,8 +138,7 @@ class Store:
     def channels(self):
         with self.connect() as db:
             return [dict(r) for r in db.execute('''SELECT c.*,
-                (SELECT COUNT(*) FROM videos v WHERE v.channel_id=c.id) AS video_count,
-                (SELECT COUNT(*) FROM jobs j WHERE j.channel_id=c.id AND j.status='completed') AS completed_count
+                (SELECT COUNT(*) FROM videos v WHERE v.channel_id=c.id) AS video_count
                 FROM channels c ORDER BY c.id DESC''')]
 
     def channel(self, channel_id):
