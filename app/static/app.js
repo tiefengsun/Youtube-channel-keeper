@@ -17,6 +17,7 @@ async function api(path, method = 'GET', body, timeout = 20000) {
   const response = await fetch('/api' + path, {method, headers:{'Content-Type':'application/json','X-Local-Request':'1'}, body:body === undefined ? undefined : JSON.stringify(body), signal:AbortSignal.timeout(timeout)});
   const data = await response.json();
   if (!response.ok) {
+    if (response.status === 401) { window.location.href = '/login'; throw new Error('请重新登录'); }
     let error = data.detail || '请求失败';
     if (response.status === 405 && path.startsWith('/manual/')) error = '后台仍在运行旧版本，请重启 Channel Keeper 服务并刷新页面后重试。';
     if (Array.isArray(error)) error = error.map(x => x.msg.replace(/^Value error, /, '')).join('；');
@@ -135,6 +136,11 @@ $('#restart-service').addEventListener('click', async e => {
     throw new Error('重启尚未完成，请检查服务日志或启动窗口');
   } catch(error) { toast(error.message, true); }
   finally { restarting = false; button.textContent = '↻ 重启服务'; await refresh(); }
+});
+$('#logout').addEventListener('click', async () => {
+  try { await api('/auth/logout', 'POST'); }
+  catch (_) { /* A stale session is already signed out. */ }
+  location.href = '/login';
 });
 function openChannel(id = null) {
   editId = id;
@@ -345,7 +351,7 @@ $('#settings-form').addEventListener('submit', async e => {
   e.preventDefault(); if (!state) return;
   const f = e.currentTarget, b = $('button[type=submit]',f); b.disabled = true;
   try {
-    await api('/settings','PUT',{...state.settings,output_dir:f.elements.output_dir.value,manual_output_dir:f.elements.manual_output_dir.value,proxy:f.elements.proxy.value,cookies_file:f.elements.cookies_file.value,retries:Number(f.elements.retries.value)});
+    await api('/settings','PUT',{...state.settings,output_dir:f.elements.output_dir.value,manual_output_dir:f.elements.manual_output_dir.value,proxy:f.elements.proxy.value,cookies_file:f.elements.cookies_file.value,retries:Number(f.elements.retries.value),concurrent_downloads:Number(f.elements.concurrent_downloads.value)});
     settingsDirty = false; $('#settings-dirty').textContent = ''; toast('设置已保存'); await refresh();
   } catch(e) { toast(e.message,true); }
   finally { b.disabled = false; }
@@ -366,7 +372,7 @@ $('#auth-form').addEventListener('submit', async e => {
     authDirty = false;
     form.reset();
     toast('管理账号已更新，请用新账号重新登录');
-    setTimeout(() => location.reload(), 800);
+    setTimeout(() => { location.href = '/login'; }, 800);
   } catch (e) {
     error.textContent = e.message; error.hidden = false;
   } finally { button.disabled = false; }

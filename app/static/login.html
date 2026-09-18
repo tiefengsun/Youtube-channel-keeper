@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>登录 · 频道收藏站</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/style.css">
+  <script defer src="/login.js"></script>
+</head>
+<body class="login-page">
+  <div class="login-shell">
+    <section class="login-story" aria-label="频道收藏站">
+      <div class="login-brand"><span class="login-brand-icon">▶</span><span>频道收藏站<small>CHANNEL KEEPER</small></span></div>
+      <div class="login-story-copy"><span class="eyebrow">YOUR PRIVATE VIDEO ARCHIVE</span><h1>喜欢的内容，<br>留在自己的地方<span>.</span></h1><p>订阅频道，收藏更新；或粘贴一条视频链接，随时下载。</p></div>
+      <div class="login-story-footer">LOCAL WORKSPACE <span>·</span> 数据由你掌握</div>
+    </section>
+    <main class="login-main">
+      <div class="login-card"><span class="eyebrow">WELCOME BACK</span><h2>登录工作空间<span>.</span></h2><p class="login-intro">输入管理账号，继续查看频道和下载任务。</p>
+        <form id="login-form">
+          <label for="username">用户名</label><input id="username" name="username" autocomplete="username" maxlength="32" required autofocus>
+          <label for="password">密码</label><input id="password" name="password" type="password" autocomplete="current-password" maxlength="256" required>
+          <p id="login-error" class="login-error" role="alert" hidden></p>
+          <button id="login-button" type="submit">登录工作空间 <span aria-hidden="true">→</span></button>
+        </form>
+        <p class="login-hint">首次部署默认账号为 keeper / keeper。登录后请到偏好设置修改。</p>
+      </div>
+    </main>
+  </div>
+</body>
+</html>

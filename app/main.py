@@ -1,16 +1,16 @@
 from contextlib import asynccontextmanager
-import base64
-import binascii
+from collections import deque
 import ipaddress
 import os
 from pathlib import Path
 import sqlite3
+import threading
 import time
 import uuid
 from urllib.parse import urlsplit
 
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.middleware.trustedhost import TrustedHostMiddleware
@@ -64,6 +64,11 @@ class CredentialChange(BaseModel):
     new_password: str = Field(default='', max_length=256)
 
 
+class LoginRequest(BaseModel):
+    username: str = Field(min_length=1, max_length=32)
+    password: str = Field(min_length=1, max_length=256)
+
+
 def create_app(data_dir=None, run_engine=True):
     lan_ip = os.environ.get('CHANNEL_KEEPER_LAN_IP', '').strip()
     if lan_ip:
@@ -77,6 +82,8 @@ def create_app(data_dir=None, run_engine=True):
     store = Store(folder / 'keeper.sqlite3')
     engine = Engine(store)
     inspected_videos = {}
+    login_attempts = {}
+    login_lock = threading.Lock()
     lock = InstanceLock(folder / 'instance.lock')
 
     @asynccontextmanager
@@ -102,20 +109,14 @@ def create_app(data_dir=None, run_engine=True):
 
     @app.middleware('http')
     async def protect_requests(request: Request, call_next):
-        if request.url.path != '/api/health':
-            authorization = request.headers.get('authorization', '')
-            authenticated = False
-            if authorization.lower().startswith('basic ') and len(authorization) <= 4096:
-                try:
-                    supplied = base64.b64decode(authorization[6:].strip(), validate=True).decode('utf-8')
-                    username, password = supplied.split(':', 1)
-                    authenticated = store.verify_credentials(username, password)
-                except (ValueError, UnicodeDecodeError, binascii.Error):
-                    pass
-            if not authenticated:
-                return JSONResponse({'detail': '需要登录管理页面'}, status_code=401,
-                                    headers={'WWW-Authenticate': 'Basic realm="Channel Keeper", charset="UTF-8"',
-                                             'Cache-Control': 'no-store'})
+        public = request.url.path in ('/api/health', '/api/auth/login', '/login',
+                                      '/login.js', '/style.css', '/favicon.svg')
+        authenticated = store.session_valid(request.cookies.get('keeper_session', ''))
+        if not public and not authenticated:
+            if request.url.path.startswith('/api/'):
+                return JSONResponse({'detail': '登录已失效，请重新登录'}, status_code=401,
+                                    headers={'Cache-Control': 'no-store'})
+            return RedirectResponse('/login', status_code=303)
         origin = request.headers.get('origin')
         if origin and (urlsplit(origin).netloc != request.headers.get('host') or urlsplit(origin).scheme != 'http'):
             return JSONResponse({'detail': '拒绝跨站请求'}, status_code=403)
@@ -140,6 +141,38 @@ def create_app(data_dir=None, run_engine=True):
     def health():
         return {'app_id': 'channel-keeper', 'instance_id': instance_id}
 
+    @app.get('/login')
+    def login_page(request: Request):
+        if store.session_valid(request.cookies.get('keeper_session', '')):
+            return RedirectResponse('/', status_code=303)
+        return FileResponse(ROOT / 'app' / 'static' / 'login.html')
+
+    @app.post('/api/auth/login')
+    def login(data: LoginRequest, request: Request, response: Response):
+        address = request.client.host if request.client else 'unknown'
+        now = time.time()
+        with login_lock:
+            attempts = login_attempts.setdefault(address, deque())
+            while attempts and attempts[0] < now - 300:
+                attempts.popleft()
+            if len(attempts) >= 5:
+                raise HTTPException(429, '登录尝试过多，请五分钟后重试')
+            attempts.append(now)
+        if not store.verify_credentials(data.username, data.password):
+            raise HTTPException(401, '用户名或密码不正确')
+        with login_lock:
+            login_attempts.pop(address, None)
+        token = store.create_session()
+        response.set_cookie('keeper_session', token, max_age=86400, httponly=True,
+                            secure=request.url.scheme == 'https', samesite='lax', path='/')
+        return {'ok': True}
+
+    @app.post('/api/auth/logout')
+    def logout(request: Request, response: Response):
+        store.revoke_session(request.cookies.get('keeper_session', ''))
+        response.delete_cookie('keeper_session', path='/')
+        return {'ok': True}
+
     @app.get('/api/state')
     def state():
         return {'app_id': 'channel-keeper', 'instance_id': instance_id,
@@ -148,7 +181,7 @@ def create_app(data_dir=None, run_engine=True):
                 'settings': store.settings(), 'diagnostics': diagnostics(), 'auth': store.auth_info()}
 
     @app.put('/api/auth')
-    def change_auth(data: CredentialChange):
+    def change_auth(data: CredentialChange, response: Response):
         if data.new_password and len(data.new_password) < 8:
             raise HTTPException(400, '新密码至少需要 8 位')
         try:
@@ -157,6 +190,7 @@ def create_app(data_dir=None, run_engine=True):
             raise HTTPException(400, str(exc))
         if not changed:
             raise HTTPException(403, '当前密码不正确')
+        response.delete_cookie('keeper_session', path='/')
         return {'ok': True, 'auth': store.auth_info()}
 
     @app.get('/api/filesystem/directories')
@@ -204,8 +238,9 @@ def create_app(data_dir=None, run_engine=True):
             c = require_channel(channel_id)
             with store.connect() as db:
                 active = db.execute("SELECT 1 FROM jobs WHERE channel_id=? AND status='downloading'", (channel_id,)).fetchone()
-            running = store.job(engine.active_job) if engine.active_job is not None and engine.active_kind == 'channel' else None
-            if c['scanning'] or active or (running and running['channel_id'] == channel_id):
+            running = any((job := store.job(job_id)) and job['channel_id'] == channel_id
+                          for kind, job_id in engine.active_jobs if kind == 'channel')
+            if c['scanning'] or active or running:
                 raise HTTPException(409, '请等待频道扫描结束，并取消正在下载的任务后再移除')
             store.remove_channel(channel_id)
         return {'ok': True}
@@ -278,13 +313,13 @@ def create_app(data_dir=None, run_engine=True):
             if not job:
                 raise HTTPException(404, '任务不存在')
             if action == 'retry' and job['status'] in ('failed', 'cancelled', 'retrying'):
-                if engine.active_job == job_id and engine.active_kind == 'manual':
+                if ('manual', job_id) in engine.active_jobs:
                     raise HTTPException(409, '下载进程正在停止，请稍候几秒再重试')
                 store.update_manual_job(job_id, status='queued', attempts=0, available_at=0,
                     error='', progress=0, stage='等待下载', speed='', eta='')
             elif action == 'cancel' and job['status'] in ('queued', 'retrying', 'downloading'):
-                if engine.active_job == job_id and engine.active_kind == 'manual':
-                    engine.cancel_event.set()
+                if event := engine.active_jobs.get(('manual', job_id)):
+                    event.set()
                 store.update_manual_job(job_id, status='cancelled', stage='已取消', speed='', eta='')
             else:
                 raise HTTPException(409, '当前任务状态不支持此操作')
@@ -345,13 +380,13 @@ def create_app(data_dir=None, run_engine=True):
             if not job:
                 raise HTTPException(404, '任务不存在')
             if action == 'retry' and job['status'] in ('failed', 'cancelled', 'retrying'):
-                if engine.active_job == job_id and engine.active_kind == 'channel':
+                if ('channel', job_id) in engine.active_jobs:
                     raise HTTPException(409, '下载进程正在停止，请稍候几秒再重试')
                 store.update_job(job_id, status='queued', attempts=0, available_at=0,
                                  error='', progress=0, stage='等待下载', speed='', eta='')
             elif action == 'cancel' and job['status'] in ('queued', 'retrying', 'downloading'):
-                if engine.active_job == job_id and engine.active_kind == 'channel':
-                    engine.cancel_event.set()
+                if event := engine.active_jobs.get(('channel', job_id)):
+                    event.set()
                 store.update_job(job_id, status='cancelled', stage='已取消', speed='', eta='')
             else:
                 raise HTTPException(409, '当前任务状态不支持此操作')

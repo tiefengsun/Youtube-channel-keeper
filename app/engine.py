@@ -118,14 +118,14 @@ class Engine:
         self.stop_event = threading.Event()
         self.actions = threading.RLock()
         self.threads = []
-        self.active_job = None
-        self.active_kind = 'channel'
-        self.cancel_event = threading.Event()
+        self.active_jobs = {}
 
     def start(self):
         self.store.recover()
-        for target in (self.scan_loop, self.download_loop):
-            thread = threading.Thread(target=target, daemon=True, name=target.__name__)
+        tasks = [(self.scan_loop, (), 'scan_loop')]
+        tasks += [(self.download_loop, (index,), f'download_loop_{index + 1}') for index in range(5)]
+        for target, args, name in tasks:
+            thread = threading.Thread(target=target, args=args, daemon=True, name=name)
             thread.start()
             self.threads.append(thread)
 
@@ -278,10 +278,11 @@ class Engine:
         start = time.monotonic()
         updated = 0
         filepath = ''
+        cancel_event = self.active_jobs.get((job.get('kind', 'channel'), job['id']))
         try:
             while True:
                 current = self.get_job(job)
-                if self.stop_event.is_set() or self.cancel_event.is_set() or not current or current['status'] == 'cancelled':
+                if self.stop_event.is_set() or (cancel_event and cancel_event.is_set()) or not current or current['status'] == 'cancelled':
                     raise Interrupted()
                 if time.monotonic() - start > 43200:
                     raise RuntimeError('下载超过 12 小时，任务已中断，可手动重试')
@@ -327,19 +328,17 @@ class Engine:
             thread.join(timeout=3)
             process.stdout.close()
 
-    def download_loop(self):
+    def download_loop(self, worker_index=0):
         while not self.stop_event.is_set():
             job = None
             try:
                 with self.actions:
                     settings = self.store.settings()
-                    if not settings['paused']:
+                    if not settings['paused'] and worker_index < settings['concurrent_downloads']:
                         job = self.store.claim_manual_job() or self.store.claim_job()
                         if job:
                             job.setdefault('kind', 'channel')
-                            self.active_job = job['id']
-                            self.active_kind = job['kind']
-                            self.cancel_event.clear()
+                            self.active_jobs[(job['kind'], job['id'])] = threading.Event()
                 if job:
                     filepath = self.download(job, settings)
                     with self.actions:
@@ -365,6 +364,6 @@ class Engine:
                             error=error)
             finally:
                 with self.actions:
-                    self.active_job = None
-                    self.active_kind = 'channel'
+                    if job:
+                        self.active_jobs.pop((job['kind'], job['id']), None)
             self.stop_event.wait(1)

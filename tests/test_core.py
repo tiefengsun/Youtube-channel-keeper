@@ -1,4 +1,3 @@
-import base64
 import json
 import subprocess
 import sys
@@ -162,9 +161,9 @@ def test_unlimited_resolution_has_no_height_filter(tmp_path):
 @pytest.fixture
 def client(tmp_path):
     app = create_app(tmp_path / 'api', run_engine=False)
-    credentials = base64.b64encode(b'keeper:keeper').decode()
     with TestClient(app, base_url='http://127.0.0.1:8765',
-                    headers={'X-Local-Request':'1', 'Authorization': f'Basic {credentials}'}) as client:
+                    headers={'X-Local-Request':'1'}) as client:
+        assert client.post('/api/auth/login', json={'username':'keeper','password':'keeper'}).status_code == 200
         yield client
 
 
@@ -193,33 +192,62 @@ def test_local_request_protection(client):
 def test_lan_mode_requires_authentication_on_pages_and_api(tmp_path, monkeypatch):
     monkeypatch.setenv('CHANNEL_KEEPER_LAN_IP', '10.168.165.219')
     app = create_app(tmp_path / 'lan', run_engine=False)
-    with TestClient(app, base_url='http://10.168.165.219:8765') as lan_client:
+    with TestClient(app, base_url='http://10.168.165.219:8765', headers={'X-Local-Request':'1'}) as lan_client:
         assert lan_client.get('/api/health').json()['app_id'] == 'channel-keeper'
-        assert lan_client.get('/').status_code == 401
+        assert lan_client.get('/', follow_redirects=False).status_code == 303
+        assert lan_client.get('/login').status_code == 200
         assert lan_client.get('/api/state').status_code == 401
+        assert 'WWW-Authenticate' not in lan_client.get('/api/state').headers
         assert lan_client.get('/api/state', headers={'Authorization': 'Basic invalid'}).status_code == 401
-        wrong = base64.b64encode(b'keeper:wrong').decode()
-        assert lan_client.get('/api/state', headers={'Authorization': f'Basic {wrong}'}).status_code == 401
-        correct = base64.b64encode(b'keeper:keeper').decode()
-        headers = {'Authorization': f'Basic {correct}', 'X-Local-Request': '1'}
-        assert lan_client.get('/', headers=headers).status_code == 200
-        assert lan_client.get('/api/state', headers=headers).json()['auth'] == {'username': 'keeper', 'must_change': True}
-        assert lan_client.post('/api/scan', headers=headers).status_code == 200
-        assert lan_client.post('/api/scan', headers={'Authorization': f'Basic {correct}'}).status_code == 403
-        assert lan_client.put('/api/auth', headers=headers, json={'username': 'keeper', 'current_password': 'bad',
+        assert lan_client.post('/api/auth/login', json={'username':'keeper','password':'wrong'}).status_code == 401
+        assert lan_client.post('/api/auth/login', json={'username':'keeper','password':'keeper'}).status_code == 200
+        assert lan_client.get('/').status_code == 200
+        assert lan_client.get('/api/state').json()['auth'] == {'username': 'keeper', 'must_change': True}
+        assert lan_client.post('/api/scan').status_code == 200
+        assert lan_client.post('/api/scan', headers={'X-Local-Request':''}).status_code == 403
+        assert lan_client.put('/api/auth', json={'username': 'keeper', 'current_password': 'bad',
             'new_password': 'new-password-123'}).status_code == 403
-        assert lan_client.put('/api/auth', headers=headers, json={'username': 'new-admin', 'current_password': 'keeper',
+        assert lan_client.put('/api/auth', json={'username': 'new-admin', 'current_password': 'keeper',
             'new_password': 'short'}).status_code == 400
-        changed = lan_client.put('/api/auth', headers=headers, json={'username': 'new-admin',
+        changed = lan_client.put('/api/auth', json={'username': 'new-admin',
             'current_password': 'keeper', 'new_password': 'new-password-123'})
         assert changed.status_code == 200
         assert changed.json()['auth'] == {'username': 'new-admin', 'must_change': False}
-        assert lan_client.get('/api/state', headers=headers).status_code == 401
-        updated = base64.b64encode(b'new-admin:new-password-123').decode()
-        assert lan_client.get('/api/state', headers={'Authorization': f'Basic {updated}'}).status_code == 200
+        assert lan_client.get('/api/state').status_code == 401
+        assert lan_client.post('/api/auth/login', json={'username':'new-admin','password':'new-password-123'}).status_code == 200
+        assert lan_client.get('/api/state').status_code == 200
     restarted = create_app(tmp_path / 'lan', run_engine=False)
-    with TestClient(restarted, base_url='http://10.168.165.219:8765') as lan_client:
-        assert lan_client.get('/api/state', headers={'Authorization': f'Basic {updated}'}).json()['auth']['must_change'] is False
+    with TestClient(restarted, base_url='http://10.168.165.219:8765', headers={'X-Local-Request':'1'}) as lan_client:
+        assert lan_client.post('/api/auth/login', json={'username':'new-admin','password':'new-password-123'}).status_code == 200
+        assert lan_client.get('/api/state').json()['auth']['must_change'] is False
+
+
+def test_session_persists_across_app_restart_and_logout(client):
+    token = client.cookies.get('keeper_session')
+    assert token and client.app.state.store.session_valid(token)
+    restarted = create_app(client.app.state.store.path.parent, run_engine=False)
+    with TestClient(restarted, base_url='http://127.0.0.1:8765',
+                    headers={'X-Local-Request':'1'}, cookies={'keeper_session':token}) as resumed:
+        assert resumed.get('/api/state').status_code == 200
+        assert resumed.post('/api/auth/logout').status_code == 200
+        assert resumed.get('/api/state').status_code == 401
+    assert not client.app.state.store.session_valid(token)
+
+
+def test_login_rate_limit_and_cookie_flags(tmp_path):
+    app = create_app(tmp_path / 'login', run_engine=False)
+    with TestClient(app, base_url='http://127.0.0.1:8765', headers={'X-Local-Request':'1'}) as browser:
+        assert browser.post('/api/auth/login', json={'username':'keeper','password':'keeper'},
+                            headers={'X-Local-Request':''}).status_code == 403
+        for _ in range(5):
+            assert browser.post('/api/auth/login', json={'username':'keeper','password':'wrong'}).status_code == 401
+        assert browser.post('/api/auth/login', json={'username':'keeper','password':'keeper'}).status_code == 429
+    second = create_app(tmp_path / 'second-login', run_engine=False)
+    with TestClient(second, base_url='http://127.0.0.1:8765', headers={'X-Local-Request':'1'}) as browser:
+        response = browser.post('/api/auth/login', json={'username':'keeper','password':'keeper'})
+        assert response.status_code == 200
+        cookie = response.headers['set-cookie'].lower()
+        assert 'httponly' in cookie and 'samesite=lax' in cookie
 
 
 def test_settings_validation_and_persistence(client, tmp_path):
@@ -277,15 +305,29 @@ def test_cancel_retry_and_active_process_race(client):
     store.finish_scan(channel, videos(1))
     job = store.claim_job()
     engine = client.app.state.engine
-    engine.active_job = job['id']
+    engine.active_jobs[('channel', job['id'])] = threading.Event()
     assert client.post(f"/api/jobs/{job['id']}/cancel").status_code == 200
-    assert engine.cancel_event.is_set()
+    assert engine.active_jobs[('channel', job['id'])].is_set()
     assert client.post(f"/api/jobs/{job['id']}/retry").status_code == 409
     assert client.delete(f'/api/channels/{channel}').status_code == 409
-    engine.active_job = None
+    engine.active_jobs.clear()
     assert client.post(f"/api/jobs/{job['id']}/retry").status_code == 200
     assert store.job(job['id'])['attempts'] == 0
     assert store.job(job['id'])['status'] == 'queued'
+
+
+def test_cancel_one_active_job_does_not_cancel_another(client):
+    store = client.app.state.store
+    channel = add(store, 2)
+    store.finish_scan(channel, videos(2, 1))
+    jobs = store.jobs()
+    engine = client.app.state.engine
+    first, second = jobs[0]['id'], jobs[1]['id']
+    engine.active_jobs[('channel', first)] = threading.Event()
+    engine.active_jobs[('channel', second)] = threading.Event()
+    assert client.post(f'/api/jobs/{first}/cancel').status_code == 200
+    assert engine.active_jobs[('channel', first)].is_set()
+    assert not engine.active_jobs[('channel', second)].is_set()
 
 
 def test_open_completed_job_folder_uses_stored_filepath(client, tmp_path, monkeypatch):
@@ -397,6 +439,39 @@ def test_worker_does_not_retry_rotated_cookies(store, monkeypatch):
     assert job['status'] == 'failed'
     assert job['stage'] == 'Cookies 已失效，等待重新导入'
     assert job['error'].startswith('Cookies 已失效')
+
+
+def test_download_concurrency_limit(store, tmp_path, monkeypatch):
+    channel = add(store, 3)
+    store.finish_scan(channel, videos(3, 2, 1))
+    settings = store.settings()
+    settings['concurrent_downloads'] = 2
+    store.save_settings(settings)
+    engine = Engine(store)
+    current = 0
+    highest = 0
+    lock = threading.Lock()
+    def fake_download(job, _settings):
+        nonlocal current, highest
+        with lock:
+            current += 1
+            highest = max(highest, current)
+        time.sleep(0.2)
+        with lock:
+            current -= 1
+        path = tmp_path / f"{job['video_id']}.mp4"
+        path.write_bytes(b'video')
+        return str(path)
+    monkeypatch.setattr(engine, 'download', fake_download)
+    engine.start()
+    try:
+        deadline = time.monotonic() + 8
+        while time.monotonic() < deadline and store.stats()['completed'] < 3:
+            time.sleep(0.05)
+        assert store.stats()['completed'] == 3
+        assert highest == 2
+    finally:
+        engine.stop()
 
 
 def test_scheduler_end_to_end_with_fake_youtube(store, tmp_path, monkeypatch):

@@ -1,4 +1,5 @@
 from contextlib import contextmanager
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -22,6 +23,9 @@ class Store:
                     id INTEGER PRIMARY KEY CHECK(id=1), username TEXT NOT NULL,
                     salt BLOB NOT NULL, password_hash BLOB NOT NULL,
                     must_change INTEGER NOT NULL DEFAULT 1
+                );
+                CREATE TABLE IF NOT EXISTS sessions (
+                    token_hash TEXT PRIMARY KEY, expires_at REAL NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS channels (
                     id INTEGER PRIMARY KEY, url TEXT NOT NULL, name TEXT NOT NULL,
@@ -93,6 +97,29 @@ class Store:
         valid_password = verify_password(password, row['salt'], row['password_hash'])
         return secrets.compare_digest(username, row['username']) and valid_password
 
+    def create_session(self):
+        token = secrets.token_urlsafe(32)
+        digest = hashlib.sha256(token.encode('ascii')).hexdigest()
+        with self.connect() as db:
+            db.execute('DELETE FROM sessions WHERE expires_at<=?', (time.time(),))
+            db.execute('INSERT INTO sessions VALUES (?,?)', (digest, time.time() + 86400))
+        return token
+
+    def session_valid(self, token):
+        if not token or len(token) > 128:
+            return False
+        digest = hashlib.sha256(token.encode('utf-8')).hexdigest()
+        with self.connect() as db:
+            return db.execute('SELECT 1 FROM sessions WHERE token_hash=? AND expires_at>?',
+                              (digest, time.time())).fetchone() is not None
+
+    def revoke_session(self, token):
+        if not token:
+            return
+        digest = hashlib.sha256(token.encode('utf-8')).hexdigest()
+        with self.connect() as db:
+            db.execute('DELETE FROM sessions WHERE token_hash=?', (digest,))
+
     def change_credentials(self, current_password, username, new_password):
         with self.connect() as db:
             db.execute('BEGIN IMMEDIATE')
@@ -105,6 +132,7 @@ class Store:
                             (row['salt'], row['password_hash']))
             db.execute('''UPDATE admin_auth SET username=?,salt=?,password_hash=?,must_change=? WHERE id=1''',
                        (username, salt, digest, 0 if new_password else row['must_change']))
+            db.execute('DELETE FROM sessions')
             return True
 
     def channels(self):

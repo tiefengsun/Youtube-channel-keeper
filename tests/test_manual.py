@@ -1,4 +1,3 @@
-import base64
 import json
 from pathlib import Path
 
@@ -43,9 +42,9 @@ def test_manual_inspect_queue_and_download_target(tmp_path, monkeypatch):
     info = {'url':'https://www.youtube.com/watch?v=abcdefghijk', 'video_id':'abcdefghijk',
             'title':'测试视频', 'uploader':'测试频道', 'duration':62, 'qualities':[1080, 720, 480]}
     monkeypatch.setattr(app.state.engine, 'inspect_video', lambda url, settings: info)
-    credentials = base64.b64encode(b'keeper:keeper').decode()
     with TestClient(app, base_url='http://127.0.0.1:8765',
-                    headers={'X-Local-Request':'1', 'Authorization':f'Basic {credentials}'}) as client:
+                    headers={'X-Local-Request':'1'}) as client:
+        assert client.post('/api/auth/login', json={'username':'keeper','password':'keeper'}).status_code == 200
         settings = client.get('/api/state').json()['settings']
         target = tmp_path / '单条下载'
         settings['manual_output_dir'] = str(target)

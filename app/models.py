@@ -116,6 +116,7 @@ class Settings(BaseModel):
     proxy: str = ''
     cookies_file: str = ''
     retries: int = Field(default=3, ge=0, le=10)
+    concurrent_downloads: int = Field(default=1, ge=1, le=5)
     paused: bool = False
 
     @field_validator('output_dir', 'manual_output_dir')
