@@ -122,7 +122,7 @@ class Engine:
 
     def start(self):
         self.store.recover()
-        tasks = [(self.scan_loop, (), 'scan_loop')]
+        tasks = [(self.scan_loop, (), f'scan_loop_{index + 1}') for index in range(2)]
         tasks += [(self.download_loop, (index,), f'download_loop_{index + 1}') for index in range(5)]
         for target, args, name in tasks:
             thread = threading.Thread(target=target, args=args, daemon=True, name=name)
@@ -174,8 +174,10 @@ class Engine:
 
     def _scan_channel(self, channel, settings):
         args = base_command(settings) + ['--flat-playlist', '--dump-single-json',
-            '--skip-download', '--no-lazy-playlist', '--abort-on-error', '--',
-            channel['url'] + '/' + channel['tab']]
+            '--skip-download', '--no-lazy-playlist', '--abort-on-error']
+        if settings.get('scan_depth', 0):
+            args += ['--playlist-items', f"1:{settings['scan_depth']}"]
+        args += ['--', channel['url'] + '/' + channel['tab']]
         process = self.spawn(args)
         start = time.monotonic()
         try:
@@ -208,6 +210,7 @@ class Engine:
     def scan_loop(self):
         while not self.stop_event.is_set():
             channel = None
+            settings = {}
             try:
                 with self.actions:
                     settings = self.store.settings()
@@ -223,7 +226,10 @@ class Engine:
             except Exception as exc:
                 log.warning('Channel scan failed: %s', self.safe_error(exc, settings))
                 if channel:
-                    self.store.scan_error(channel['id'], self.safe_error(exc, settings))
+                    try:
+                        self.store.scan_error(channel['id'], self.safe_error(exc, settings))
+                    except Exception:
+                        log.exception('Could not record channel scan failure')
             self.stop_event.wait(1)
 
     def safe_error(self, exc, settings):
@@ -331,11 +337,12 @@ class Engine:
     def download_loop(self, worker_index=0):
         while not self.stop_event.is_set():
             job = None
+            settings = {}
             try:
                 with self.actions:
                     settings = self.store.settings()
                     if not settings['paused'] and worker_index < settings['concurrent_downloads']:
-                        job = self.store.claim_manual_job() or self.store.claim_job()
+                        job = self.store.claim_next_job()
                         if job:
                             job.setdefault('kind', 'channel')
                             self.active_jobs[(job['kind'], job['id'])] = threading.Event()
@@ -353,15 +360,19 @@ class Engine:
                                               attempts=max(0, job['attempts'] - 1))
             except Exception as exc:
                 log.warning('Download failed: %s', self.safe_error(exc, settings))
-                with self.actions:
-                    if job and (current := self.get_job(job)) and current['status'] == 'downloading':
-                        error = self.safe_error(exc, settings)
-                        invalid_cookies = error.startswith('Cookies 已失效')
-                        retry = not invalid_cookies and job['attempts'] <= settings['retries']
-                        self.update_job(job, status='retrying' if retry else 'failed',
-                            stage='等待自动重试' if retry else 'Cookies 已失效，等待重新导入' if invalid_cookies else '下载失败', speed='', eta='',
-                            available_at=time.time() + min(3600, 60 * 2 ** (job['attempts'] - 1)),
-                            error=error)
+                if job:
+                    try:
+                        with self.actions:
+                            if (current := self.get_job(job)) and current['status'] == 'downloading':
+                                error = self.safe_error(exc, settings)
+                                invalid_cookies = error.startswith('Cookies 已失效')
+                                retry = not invalid_cookies and job['attempts'] <= settings['retries']
+                                self.update_job(job, status='retrying' if retry else 'failed',
+                                    stage='等待自动重试' if retry else 'Cookies 已失效，等待重新导入' if invalid_cookies else '下载失败', speed='', eta='',
+                                    available_at=time.time() + min(3600, 60 * 2 ** (job['attempts'] - 1)),
+                                    error=error)
+                    except Exception:
+                        log.exception('Could not record download failure')
             finally:
                 with self.actions:
                     if job:

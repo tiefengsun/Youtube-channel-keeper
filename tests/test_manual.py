@@ -89,3 +89,17 @@ def test_inspect_reads_available_video_heights(tmp_path, monkeypatch):
     info = engine.inspect_video('https://www.youtube.com/watch?v=abcdefghijk', store.settings())
     assert info['qualities'] == [1080, 720]
     assert info['duration'] == 61
+
+
+def test_manual_inspection_has_two_slot_limit(tmp_path):
+    app = create_app(tmp_path / 'limited', run_engine=False)
+    with TestClient(app, base_url='http://127.0.0.1:8765', headers={'X-Local-Request':'1'}) as client:
+        assert client.post('/api/auth/login', json={'username':'keeper','password':'keeper'}).status_code == 200
+        assert app.state.inspect_slots.acquire(blocking=False)
+        assert app.state.inspect_slots.acquire(blocking=False)
+        try:
+            response = client.post('/api/manual/inspect', json={'url':'https://youtu.be/abcdefghijk'})
+            assert response.status_code == 429
+        finally:
+            app.state.inspect_slots.release()
+            app.state.inspect_slots.release()

@@ -87,6 +87,20 @@ def test_atomic_claim_prevents_duplicate_download(store):
     assert sum(j is not None for j in results) == 1
 
 
+def test_oldest_eligible_job_claimed_across_both_queues(store):
+    channel = add(store, 1)
+    store.finish_scan(channel, videos(1))
+    manual_id = store.add_manual_job('abcdefghijk', '单条视频', '作者', 'mp4', 720, str(store.path.parent))
+    with store.connect() as db:
+        db.execute('UPDATE jobs SET created_at=100 WHERE channel_id=?', (channel,))
+        db.execute('UPDATE manual_jobs SET created_at=200 WHERE id=?', (manual_id,))
+    first = store.claim_next_job()
+    second = store.claim_next_job()
+    assert first['kind'] == 'channel'
+    assert second['kind'] == 'manual'
+    assert store.claim_next_job() is None
+
+
 def test_scheduled_first_run_waits_then_can_be_changed_to_now(store):
     start_at = time.time() + 3600
     channel = store.add_channels([ChannelCreate(url='@scheduled',schedule_mode='scheduled',start_at=start_at)])[0]
@@ -257,6 +271,7 @@ def test_settings_validation_and_persistence(client, tmp_path):
     assert client.get('/api/state').json()['settings']['proxy'] == settings['proxy']
     assert client.put('/api/settings',json={**settings,'proxy':'file:///etc/passwd'}).status_code == 422
     assert client.put('/api/settings',json={**settings,'cookies_file':str(tmp_path / 'missing.txt')}).status_code == 422
+    assert client.put('/api/settings',json={**settings,'scan_depth':5001}).status_code == 422
 
 
 def test_cookie_import_enables_managed_file_and_retries_auth_failure(client):
@@ -405,6 +420,39 @@ def test_scanner_rejects_partial_response(store, tmp_path, monkeypatch):
     with pytest.raises(RuntimeError,match='不完整'):
         engine.scan_channel(channel,store.settings())
     assert not store.channel(channel_id)['initialized']
+
+
+def test_scan_depth_passes_playlist_limit(store, monkeypatch):
+    engine = Engine(store)
+    channel = store.channel(add(store))
+    captured = []
+    def fail_spawn(args):
+        captured.extend(args)
+        raise RuntimeError('测试命令')
+    monkeypatch.setattr(engine, 'spawn', fail_spawn)
+    with pytest.raises(RuntimeError, match='测试命令'):
+        engine.scan_channel(channel, {**store.settings(), 'scan_depth':300})
+    assert captured[captured.index('--playlist-items') + 1] == '1:300'
+
+
+@pytest.mark.parametrize('loop', ['scan', 'download'])
+def test_transient_settings_error_does_not_kill_worker(store, monkeypatch, loop):
+    engine = Engine(store)
+    original = store.settings
+    attempts = 0
+    def flaky_settings():
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise OSError('数据库暂时不可用')
+        engine.stop_event.set()
+        return original()
+    monkeypatch.setattr(store, 'settings', flaky_settings)
+    if loop == 'scan':
+        engine.scan_loop()
+    else:
+        engine.download_loop()
+    assert attempts == 2
 
 
 def test_worker_failure_backoff_and_retry_exhaustion(store, monkeypatch):

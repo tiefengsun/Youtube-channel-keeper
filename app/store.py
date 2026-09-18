@@ -293,6 +293,30 @@ class Store:
                 row['kind'] = 'manual'
             return row
 
+    def claim_next_job(self):
+        """Claim the oldest eligible manual or channel job in one transaction."""
+        with self.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            now = time.time()
+            manual = db.execute('''SELECT * FROM manual_jobs WHERE status IN ('queued','retrying')
+                AND available_at<=? ORDER BY created_at,id LIMIT 1''', (now,)).fetchone()
+            channel = db.execute('''SELECT j.*,c.name AS channel_name FROM jobs j
+                JOIN channels c ON c.id=j.channel_id WHERE j.status IN ('queued','retrying')
+                AND j.available_at<=? AND c.enabled=1 ORDER BY j.created_at,j.id LIMIT 1''', (now,)).fetchone()
+            if manual is None and channel is None:
+                return None
+            if manual is not None and (channel is None or (manual['created_at'], manual['id']) <=
+                                       (channel['created_at'], channel['id'])):
+                db.execute("UPDATE manual_jobs SET status='downloading',attempts=attempts+1,error='',stage='正在解析',progress=0 WHERE id=?", (manual['id'],))
+                job = dict(manual)
+                job['kind'] = 'manual'
+            else:
+                db.execute("UPDATE jobs SET status='downloading',attempts=attempts+1,error='',stage='正在解析',progress=0 WHERE id=?", (channel['id'],))
+                job = dict(channel)
+                job['kind'] = 'channel'
+            job['attempts'] += 1
+            return job
+
     def update_manual_job(self, job_id, **fields):
         allowed = {'status', 'progress', 'stage', 'speed', 'eta', 'available_at', 'finished_at', 'error', 'filepath', 'attempts'}
         if not fields or not fields.keys() <= allowed:

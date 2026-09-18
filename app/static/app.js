@@ -351,7 +351,7 @@ $('#settings-form').addEventListener('submit', async e => {
   e.preventDefault(); if (!state) return;
   const f = e.currentTarget, b = $('button[type=submit]',f); b.disabled = true;
   try {
-    await api('/settings','PUT',{...state.settings,output_dir:f.elements.output_dir.value,manual_output_dir:f.elements.manual_output_dir.value,proxy:f.elements.proxy.value,cookies_file:f.elements.cookies_file.value,retries:Number(f.elements.retries.value),concurrent_downloads:Number(f.elements.concurrent_downloads.value)});
+    await api('/settings','PUT',{...state.settings,output_dir:f.elements.output_dir.value,manual_output_dir:f.elements.manual_output_dir.value,proxy:f.elements.proxy.value,cookies_file:f.elements.cookies_file.value,retries:Number(f.elements.retries.value),concurrent_downloads:Number(f.elements.concurrent_downloads.value),scan_depth:Number(f.elements.scan_depth.value)});
     settingsDirty = false; $('#settings-dirty').textContent = ''; toast('设置已保存'); await refresh();
   } catch(e) { toast(e.message,true); }
   finally { b.disabled = false; }

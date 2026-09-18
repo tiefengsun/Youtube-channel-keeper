@@ -82,6 +82,7 @@ def create_app(data_dir=None, run_engine=True):
     store = Store(folder / 'keeper.sqlite3')
     engine = Engine(store)
     inspected_videos = {}
+    inspect_slots = threading.BoundedSemaphore(2)
     login_attempts = {}
     login_lock = threading.Lock()
     lock = InstanceLock(folder / 'instance.lock')
@@ -102,6 +103,7 @@ def create_app(data_dir=None, run_engine=True):
     instance_id = uuid.uuid4().hex
     app.state.store = store
     app.state.engine = engine
+    app.state.inspect_slots = inspect_slots
     allowed_hosts = ['127.0.0.1', 'localhost', '[::1]', 'testserver']
     if lan_ip:
         allowed_hosts.append(lan_ip)
@@ -276,10 +278,17 @@ def create_app(data_dir=None, run_engine=True):
 
     @app.post('/api/manual/inspect')
     def inspect_manual_video(data: ManualInspect):
+        if not inspect_slots.acquire(blocking=False):
+            raise HTTPException(429, '已有 2 条视频正在解析，请稍后重试')
+        settings = {}
         try:
-            info = engine.inspect_video(data.url, store.settings())
-        except Exception as exc:
-            raise HTTPException(400, engine.safe_error(exc, store.settings()))
+            try:
+                settings = store.settings()
+                info = engine.inspect_video(data.url, settings)
+            except Exception as exc:
+                raise HTTPException(400, engine.safe_error(exc, settings))
+        finally:
+            inspect_slots.release()
         with engine.actions:
             inspected_videos[info['video_id']] = (time.time(), info)
             for video_id, (created, _) in list(inspected_videos.items()):

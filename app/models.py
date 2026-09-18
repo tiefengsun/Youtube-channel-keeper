@@ -117,6 +117,7 @@ class Settings(BaseModel):
     cookies_file: str = ''
     retries: int = Field(default=3, ge=0, le=10)
     concurrent_downloads: int = Field(default=1, ge=1, le=5)
+    scan_depth: int = Field(default=0, ge=0, le=5000)
     paused: bool = False
 
     @field_validator('output_dir', 'manual_output_dir')

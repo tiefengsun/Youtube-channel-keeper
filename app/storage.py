@@ -2,7 +2,10 @@
 import json
 from pathlib import Path
 import re
+import threading
 import unicodedata
+
+_directory_lock = threading.Lock()
 
 
 def safe_channel_name(name, channel_id):
@@ -16,6 +19,14 @@ def safe_channel_name(name, channel_id):
 
 
 def channel_directory(root, name, channel_id):
+    # The instance lock guarantees one service process per data directory. A
+    # process-wide lock keeps concurrent workers from seeing a new folder
+    # before its ownership marker has been written.
+    with _directory_lock:
+        return _channel_directory(root, name, channel_id)
+
+
+def _channel_directory(root, name, channel_id):
     root = Path(root).resolve()
     root.mkdir(parents=True, exist_ok=True)
     name = safe_channel_name(name, channel_id)

@@ -1,4 +1,6 @@
 from pathlib import Path
+import threading
+import time
 
 import pytest
 
@@ -36,3 +38,23 @@ def test_same_name_and_unowned_directory_are_not_merged(tmp_path):
     assert channel_directory(tmp_path, '同名频道', 2) == second
     (tmp_path / '已有文件夹').mkdir()
     assert channel_directory(tmp_path, '已有文件夹', 3).name == '已有文件夹 [3]'
+
+
+def test_concurrent_workers_use_one_channel_directory(tmp_path, monkeypatch):
+    original_mkdir = Path.mkdir
+    target = tmp_path / '并发频道'
+    def delayed_mkdir(path, *args, **kwargs):
+        result = original_mkdir(path, *args, **kwargs)
+        if path == target:
+            time.sleep(0.1)
+        return result
+    monkeypatch.setattr(Path, 'mkdir', delayed_mkdir)
+    folders = []
+    threads = [threading.Thread(target=lambda: folders.append(channel_directory(tmp_path, '并发频道', 7)))
+               for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert folders == [target] * 8
+    assert not (tmp_path / '并发频道 [7]').exists()
