@@ -1,4 +1,4 @@
-# 频道收藏站 · Channel Keeper
+# Youtube-channel-keeper
 
 一个可运行在 Windows 本机或 Ubuntu 24.04 服务器的 YouTube 频道自动下载工具。使用中文网页管理多个频道，后台按周期扫描更新，通过 [yt-dlp](https://github.com/yt-dlp/yt-dlp) 下载，FFmpeg 负责音视频合并与格式转换。无需 YouTube API Key。
 
