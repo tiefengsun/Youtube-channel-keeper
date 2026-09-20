@@ -276,6 +276,19 @@ class Store:
             row = db.execute('SELECT * FROM manual_jobs WHERE id=?', (job_id,)).fetchone()
             return dict(row) if row else None
 
+    def clear_finished_jobs(self):
+        """Remove terminal task records while keeping queued and running work intact."""
+        terminal = ('completed', 'failed', 'cancelled')
+        placeholders = ','.join('?' for _ in terminal)
+        with self.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            channel = db.execute(
+                f'DELETE FROM jobs WHERE status IN ({placeholders})', terminal)
+            manual = db.execute(
+                f'DELETE FROM manual_jobs WHERE status IN ({placeholders})', terminal)
+            return {'channel': channel.rowcount, 'manual': manual.rowcount,
+                    'total': channel.rowcount + manual.rowcount}
+
     def add_manual_job(self, video_id, title, uploader, fmt, resolution, output_dir):
         with self.connect() as db:
             cur = db.execute('''INSERT INTO manual_jobs

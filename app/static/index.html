@@ -57,7 +57,7 @@
     <section class="page" id="view-downloads" hidden>
       <div class="page-heading"><div><div class="eyebrow">A GROWING PERSONAL ARCHIVE</div><h1>每一份收藏，都有迹可循<span class="accent">。</span></h1><p>查看下载进度、重试失败任务，找到已保存的文件。</p></div><button class="button" id="pause-scheduler">暂停调度</button></div>
       <div class="banner">音频和视频可能分段下载，进度会随分段重新计算；合并完成后才标记为已完成。暂停调度只停止启动新任务。</div>
-      <div class="section-heading"><div class="section-tabs" id="job-tabs"><button class="tab active" data-job-filter="all">全部</button><button class="tab" data-job-filter="active">进行中</button><button class="tab" data-job-filter="completed">已完成</button><button class="tab" data-job-filter="failed">失败 / 已取消</button></div><span class="muted">展示最近 300 条记录</span></div>
+      <div class="section-heading"><div class="section-tabs" id="job-tabs"><button class="tab active" data-job-filter="all">全部</button><button class="tab" data-job-filter="active">进行中</button><button class="tab" data-job-filter="completed">已完成</button><button class="tab" data-job-filter="failed">失败 / 已取消</button></div><div class="toolbar"><span class="muted">展示最近 300 条记录</span><button class="button small" id="clear-jobs" type="button">清理记录</button></div></div>
       <div id="job-list"></div>
     </section>
     <section class="page" id="view-settings" hidden>
@@ -95,6 +95,7 @@
   </form>
 </dialog>
 <dialog id="confirm-dialog"><form id="confirm-form"><div class="dialog-heading"><h2>移除频道？</h2></div><div class="dialog-body"><p id="confirm-message"></p><p class="muted">将删除订阅及任务记录，已下载的视频文件会保留。</p></div><div class="dialog-footer"><button type="button" class="button" data-close="confirm-dialog">取消</button><button type="submit" class="button danger-button">确认移除</button></div></form></dialog>
+<dialog id="clear-jobs-dialog"><form id="clear-jobs-form"><div class="dialog-heading"><h2>清理任务记录？</h2></div><div class="dialog-body"><p>将清理所有已完成、失败和已取消的任务记录。</p><p class="muted">排队中和正在下载的任务不受影响，已经下载的视频文件也会保留。</p></div><div class="dialog-footer"><button type="button" class="button" data-close="clear-jobs-dialog">取消</button><button type="submit" class="button danger-button">确认清理</button></div></form></dialog>
 <dialog id="directory-dialog"><div class="dialog-heading"><div><div class="eyebrow">SERVER DIRECTORY</div><h2>选择视频保存目录</h2></div><button type="button" class="icon-button" data-close="directory-dialog" aria-label="关闭">×</button></div><div class="dialog-body directory-dialog-body"><div class="directory-location"><button class="button small" id="directory-up" type="button">↑ 上一级</button><input id="directory-current" aria-label="当前目录" readonly></div><div id="directory-roots" class="directory-roots"></div><div id="directory-list" class="directory-list"></div><p id="directory-error" class="inline-error" hidden></p><p class="muted">这里浏览的是运行 Channel Keeper 的电脑或 Ubuntu 服务器目录。选中后仍需点击“保存设置”。</p></div><div class="dialog-footer"><button type="button" class="button" data-close="directory-dialog">取消</button><button type="button" class="button primary" id="select-directory">选择当前目录</button></div></dialog>
 <div id="toast" role="status" aria-live="polite" hidden></div>
 </body>

@@ -424,6 +424,28 @@ def test_cancel_one_active_job_does_not_cancel_another(client):
     assert not engine.active_jobs[('channel', second)].is_set()
 
 
+def test_clear_finished_jobs_keeps_active_tasks_and_downloaded_files(client, tmp_path):
+    store = client.app.state.store
+    channel = add(store, 3)
+    store.finish_scan(channel, videos(3, 2, 1))
+    jobs = store.jobs()
+    downloaded = tmp_path / '已下载.mp4'
+    downloaded.write_bytes(b'video')
+    store.update_job(jobs[0]['id'], status='completed', filepath=str(downloaded))
+    store.update_job(jobs[1]['id'], status='failed', error='失败')
+    manual_id = store.add_manual_job('abcdefghijk', '已取消任务', '作者', 'mp4', 720, str(tmp_path))
+    active_manual_id = store.add_manual_job('lmnopqrstuv', '等待任务', '作者', 'mp4', 720, str(tmp_path))
+    store.update_manual_job(manual_id, status='cancelled')
+
+    response = client.delete('/api/jobs')
+
+    assert response.status_code == 200
+    assert response.json() == {'channel': 2, 'manual': 1, 'total': 3}
+    assert [job['status'] for job in store.jobs()] == ['queued']
+    assert [job['id'] for job in store.manual_jobs()] == [active_manual_id]
+    assert downloaded.read_bytes() == b'video'
+
+
 def test_open_completed_job_folder_uses_stored_filepath(client, tmp_path, monkeypatch):
     store = client.app.state.store
     channel = add(store, 1)

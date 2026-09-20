@@ -75,6 +75,9 @@ function renderJobs(force = false) {
   if (!force && signature === lastJobs) return;
   lastJobs = signature;
   const allJobs = [...state.jobs.map(j => ({...j,kind:'channel'})),...(state.manual_jobs||[]).map(j => ({...j,kind:'manual',channel_name:j.source_type==='channel_batch'?j.uploader:'单条视频'}))].sort((a,b) => (b.status==='downloading') - (a.status==='downloading') || b.created_at - a.created_at);
+  const clearable = allJobs.filter(j => ['completed','failed','cancelled'].includes(j.status)).length;
+  $('#clear-jobs').disabled = clearable === 0;
+  $('#clear-jobs').textContent = clearable ? `清理记录（${clearable}）` : '清理记录';
   const jobs = allJobs.filter(j => jobFilter === 'all' || (jobFilter === 'active' ? ['queued','retrying','downloading'].includes(j.status) : jobFilter === 'failed' ? ['failed','cancelled'].includes(j.status) : j.status === jobFilter));
   const expanded = new Set($$('#job-list details[open]').map(el => el.dataset.error));
   $('#job-list').innerHTML = jobs.length ? jobs.map(j => {
@@ -457,6 +460,18 @@ $('#manual-download-form').addEventListener('submit', async e => {
     toast('视频已加入下载队列'); await refresh(); showView('downloads');
   } catch(error) { toast(error.message,true); }
   finally { b.disabled = false; }
+});
+$('#clear-jobs').addEventListener('click', () => $('#clear-jobs-dialog').showModal());
+$('#clear-jobs-form').addEventListener('submit', async e => {
+  e.preventDefault();
+  const button = $('button[type=submit]', e.currentTarget); button.disabled = true;
+  try {
+    const result = await api('/jobs', 'DELETE');
+    $('#clear-jobs-dialog').close();
+    toast(result.total ? `已清理 ${result.total} 条任务记录，视频文件已保留` : '没有可清理的任务记录');
+    await refresh();
+  } catch(error) { toast(error.message, true); }
+  finally { button.disabled = false; }
 });
 function batchDate(entry) {
   if (entry.timestamp) return new Date(entry.timestamp * 1000).toLocaleDateString('zh-CN');

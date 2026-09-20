@@ -499,6 +499,11 @@ def create_app(data_dir=None, run_engine=True):
             raise HTTPException(503, str(exc))
         return {'ok': True}
 
+    @app.delete('/api/jobs')
+    def clear_finished_jobs():
+        with engine.actions:
+            return store.clear_finished_jobs()
+
     @app.post('/api/jobs/{job_id}/{action}')
     def job_action(job_id: int, action: str):
         with engine.actions:
