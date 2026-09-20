@@ -111,8 +111,12 @@ def create_app(data_dir=None, run_engine=True):
 
     @app.middleware('http')
     async def protect_requests(request: Request, call_next):
+        client_host = request.client.host if request.client else ''
+        local_shutdown = (request.url.path == '/api/shutdown'
+                          and client_host in ('127.0.0.1', '::1')
+                          and request.headers.get('x-local-request') == '1')
         public = request.url.path in ('/api/health', '/api/auth/login', '/login',
-                                      '/login.js', '/style.css', '/favicon.svg')
+                                      '/login.js', '/style.css', '/favicon.svg') or local_shutdown
         authenticated = store.session_valid(request.cookies.get('keeper_session', ''))
         if not public and not authenticated:
             if request.url.path.startswith('/api/'):

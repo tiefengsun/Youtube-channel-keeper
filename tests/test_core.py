@@ -574,6 +574,27 @@ def test_shutdown_callback(client):
     assert called == [True]
 
 
+def test_shutdown_allows_marked_loopback_request_without_login(tmp_path):
+    app = create_app(tmp_path / 'local-shutdown', run_engine=False)
+    called = []
+    app.state.request_shutdown = lambda: called.append(True)
+    with TestClient(app, base_url='http://127.0.0.1:8765',
+                    client=('127.0.0.1', 50000)) as local_client:
+        assert local_client.post('/api/shutdown').status_code == 401
+        assert local_client.post('/api/shutdown',
+                                 headers={'X-Local-Request': '1'}).status_code == 200
+    assert called == [True]
+
+
+def test_shutdown_still_requires_login_for_non_loopback_client(tmp_path):
+    app = create_app(tmp_path / 'remote-shutdown', run_engine=False)
+    app.state.request_shutdown = lambda: None
+    with TestClient(app, base_url='http://127.0.0.1:8765',
+                    client=('192.168.1.20', 50000),
+                    headers={'X-Local-Request': '1'}) as remote_client:
+        assert remote_client.post('/api/shutdown').status_code == 401
+
+
 def test_restart_callback_and_instance_id(client):
     called = []
     before = client.get('/api/state').json()['instance_id']

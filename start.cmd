@@ -10,7 +10,7 @@ if not exist ".venv\installed.marker" (
     if errorlevel 1 goto :failed
     echo installed>".venv\installed.marker"
 )
-".venv\Scripts\python.exe" run.py
+powershell -NoProfile -ExecutionPolicy Bypass -File ".\scripts\start-background.ps1"
 if errorlevel 1 goto :failed
 exit /b 0
 :failed
