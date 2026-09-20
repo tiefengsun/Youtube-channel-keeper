@@ -2,7 +2,7 @@
 const $ = (q, root = document) => root.querySelector(q);
 const $$ = (q, root = document) => [...root.querySelectorAll(q)];
 const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-let state, editId = null, deleteId = null, channelFilter = 'all', jobFilter = 'all', settingsDirty = false, authDirty = false, inspectedVideo = null;
+let state, editId = null, deleteId = null, channelFilter = 'all', jobFilter = 'all', settingsDirty = false, authDirty = false, inspectedVideo = null, runtimeReport = null;
 let toastTimer, refreshBusy = false, restarting = false, lastChannels = '', lastJobs = '';
 const pendingChannels = new Set();
 const colors = [['#eaeedf','#748958'],['#f5e9df','#ae845f'],['#e6eef0','#72979b'],['#ede7f2','#9a81ac'],['#f0ebdb','#a48f57']];
@@ -28,6 +28,10 @@ async function api(path, method = 'GET', body, timeout = 20000) {
 const timeText = value => value ? new Date(value * 1000).toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false}) : '尚未扫描';
 const intervalText = n => n < 60 ? `${n} 分钟` : n < 1440 ? `${n / 60} 小时` : `${n / 1440} 天`;
 const quality = c => ['mp3','m4a'].includes(c.format) ? '仅音频' : c.resolution ? `最高 ${c.resolution}p` : '可用最高画质';
+function channelVisual(id, name) {
+  const [bg,fg] = colors[(Number(id) - 1) % colors.length];
+  return {bg,fg,initial:String(name || '?').replace(/^@/,'').slice(0,1).toUpperCase()};
+}
 function showView(view) {
   $$('.page').forEach(el => el.hidden = el.id !== 'view-' + view);
   $$('.nav-item').forEach(el => el.classList.toggle('active', el.dataset.view === view));
@@ -51,12 +55,12 @@ function renderChannels(force = false) {
   // Preserve expanded error panels while polling.
   const expanded = new Set($$('#channel-grid details[open]').map(el => el.dataset.error));
   $('#channel-grid').innerHTML = channels.map(c => {
-    const [bg,fg] = colors[(c.id - 1) % colors.length];
+    const {bg,fg,initial} = channelVisual(c.id, c.name);
     const paused = !c.enabled || state.settings.paused;
     const status = !c.enabled ? '已暂停' : state.settings.paused ? '全局已暂停' : c.scanning ? '正在扫描' : c.error ? '扫描异常' : c.initialized ? '自动监控中' : '等待首次扫描';
     const next = paused ? (c.scanning ? '本次扫描结束后暂停' : '恢复后继续扫描') : c.scanning ? '正在读取频道列表…' : c.error?.startsWith('Cookies 已失效') ? '等待重新导入 Cookies' : c.next_scan > Date.now() / 1000 ? `下次 ${timeText(c.next_scan)}` : '即将开始扫描';
     const monitorButton = `<button class="button monitor-button ${c.enabled?'':'resume'}" data-action="monitor" data-id="${c.id}" data-enabled="${c.enabled?'0':'1'}" aria-label="${c.enabled?'暂停':'开始'}监控 ${esc(c.name)}" title="${c.enabled?'暂停后不再启动此频道的新扫描和下载，已开始的任务会继续完成':'开始监控并安排一次扫描；全局暂停时需先恢复调度'}" ${pendingChannels.has(c.id)?'disabled':''}>${pendingChannels.has(c.id)?'正在更新…':c.enabled?'Ⅱ 暂停监控':'▶ 开始监控'}</button>`;
-    return `<article class="channel-card"><div class="card-top"><div class="avatar" style="--avatar-bg:${bg};--avatar-fg:${fg}">${esc(c.name.replace(/^@/,'').slice(0,1).toUpperCase())}</div><div class="card-identity"><h3 title="${esc(c.name)}">${esc(c.name)}</h3><a href="${esc(c.url)}" target="_blank" rel="noreferrer">${esc(c.url.replace('https://www.youtube.com/',''))} ↗</a></div><div class="card-actions"><button class="icon-button" data-action="edit" data-id="${c.id}" aria-label="编辑 ${esc(c.name)}" title="编辑频道">⋯</button><button class="icon-button" data-action="delete" data-id="${c.id}" aria-label="移除 ${esc(c.name)}" title="移除频道">×</button></div></div><div class="card-status"><span class="pill ${paused?'paused':c.error?'error':''}">● ${status}</span></div><div class="card-config"><span class="chip">${c.format.toUpperCase()}</span><span class="chip">${quality(c)}</span><span class="chip">每 ${intervalText(c.interval_minutes)}</span><span class="chip">${c.tab === 'shorts' ? 'Shorts' : 'Videos'}</span></div><div class="card-bottom"><div class="scan-time">${c.last_scan ? '上次 ' + timeText(c.last_scan) : '等待建立首次基线'}<br>${next}</div><button class="scan-button" data-action="scan" data-id="${c.id}" ${c.scanning||paused?'disabled':''}>↻ 立即扫描</button></div>${monitorButton}${c.error ? `<details class="card-error" data-error="${c.id}" ${expanded.has(String(c.id))?'open':''}><summary>查看扫描错误</summary><p>${esc(c.error)}</p></details>` : ''}</article>`;
+    return `<article class="channel-card"><div class="card-top"><div class="avatar" style="--avatar-bg:${bg};--avatar-fg:${fg}">${esc(initial)}</div><div class="card-identity"><h3 title="${esc(c.name)}">${esc(c.name)}</h3><a href="${esc(c.url)}" target="_blank" rel="noreferrer">${esc(c.url.replace('https://www.youtube.com/',''))} ↗</a></div><div class="card-actions"><button class="icon-button" data-action="edit" data-id="${c.id}" aria-label="编辑 ${esc(c.name)}" title="编辑频道">⋯</button><button class="icon-button" data-action="delete" data-id="${c.id}" aria-label="移除 ${esc(c.name)}" title="移除频道">×</button></div></div><div class="card-status"><span class="pill ${paused?'paused':c.error?'error':''}">● ${status}</span></div><div class="card-config"><span class="chip">${c.format.toUpperCase()}</span><span class="chip">${quality(c)}</span><span class="chip">每 ${intervalText(c.interval_minutes)}</span><span class="chip">${c.tab === 'shorts' ? 'Shorts' : 'Videos'}</span></div><div class="card-bottom"><div class="scan-time">${c.last_scan ? '上次 ' + timeText(c.last_scan) : '等待建立首次基线'}<br>${next}</div><button class="scan-button" data-action="scan" data-id="${c.id}" ${c.scanning||paused?'disabled':''}>↻ 立即扫描</button></div>${monitorButton}${c.error ? `<details class="card-error" data-error="${c.id}" ${expanded.has(String(c.id))?'open':''}><summary>查看扫描错误</summary><p>${esc(c.error)}</p></details>` : ''}</article>`;
   }).join('');
 }
 function renderJobs(force = false) {
@@ -69,7 +73,9 @@ function renderJobs(force = false) {
   $('#job-list').innerHTML = jobs.length ? jobs.map(j => {
     const active = ['queued','downloading','retrying'].includes(j.status);
     const path = j.kind === 'manual' ? `/manual/jobs/${j.id}` : `/jobs/${j.id}`;
-    return `<article class="job-card"><div class="video-icon">${['mp3','m4a'].includes(j.format)?'♫':'▷'}</div><div><a class="job-title" href="https://www.youtube.com/watch?v=${esc(j.video_id)}" target="_blank" rel="noreferrer">${esc(j.title)}</a><div class="job-meta"><span>${esc(j.channel_name)}</span><span>${j.format.toUpperCase()} · ${quality(j)}</span><span>${timeText(j.created_at)}</span><span>已尝试 ${j.attempts} 次</span></div>${j.status === 'downloading' ? `<div class="progress"><span style="width:${j.progress}%"></span></div><div class="progress-label">${esc(j.stage)} · ${j.progress.toFixed(1)}% ${esc(j.speed)} ${j.eta?'· 剩余 '+esc(j.eta):''}</div>` : ''}${j.status === 'retrying' ? `<div class="progress-label">计划重试：${timeText(j.available_at)}</div>` : ''}${j.filepath ? `<div class="filepath">${esc(j.filepath)}</div>`:''}${j.error?`<details class="card-error" data-error="${j.kind}:${j.id}" ${expanded.has(`${j.kind}:${j.id}`)?'open':''}><summary>查看失败原因</summary><p>${esc(j.error)}</p></details>`:''}</div><div class="job-controls"><span class="pill ${j.status==='failed'?'error':j.status==='cancelled'?'paused':''}">${statuses[j.status]||esc(j.status)}</span>${active?`<button class="button small" data-job-action="cancel" data-kind="${j.kind}" data-id="${j.id}">取消</button>`:''}${['failed','cancelled','retrying'].includes(j.status)?`<button class="button small" data-job-action="retry" data-kind="${j.kind}" data-id="${j.id}">重试</button>`:''}${j.status==='completed'?`<button class="button small" data-job-action="open-folder" data-kind="${j.kind}" data-id="${j.id}">打开文件夹 ↗</button><a class="button small" href="/api${path}/file">获取文件 ↓</a>`:''}</div></article>`;
+    const source = j.kind === 'channel' ? channelVisual(j.channel_id, j.channel_name) : null;
+    const sourceIcon = source ? `<div class="video-icon channel-source" style="--avatar-bg:${source.bg};--avatar-fg:${source.fg}">${esc(source.initial)}</div>` : `<div class="video-icon">${['mp3','m4a'].includes(j.format)?'♫':'▷'}</div>`;
+    return `<article class="job-card">${sourceIcon}<div><a class="job-title" href="https://www.youtube.com/watch?v=${esc(j.video_id)}" target="_blank" rel="noreferrer">${esc(j.title)}</a><div class="job-meta"><span>${esc(j.channel_name)}</span><span>${j.format.toUpperCase()} · ${quality(j)}</span><span>${timeText(j.created_at)}</span><span>已尝试 ${j.attempts} 次</span></div>${j.status === 'downloading' ? `<div class="progress"><span style="width:${j.progress}%"></span></div><div class="progress-label">${esc(j.stage)} · ${j.progress.toFixed(1)}% ${esc(j.speed)} ${j.eta?'· 剩余 '+esc(j.eta):''}</div>` : ''}${j.status === 'retrying' ? `<div class="progress-label">计划重试：${timeText(j.available_at)}</div>` : ''}${j.filepath ? `<div class="filepath">${esc(j.filepath)}</div>`:''}${j.error?`<details class="card-error" data-error="${j.kind}:${j.id}" ${expanded.has(`${j.kind}:${j.id}`)?'open':''}><summary>查看失败原因</summary><p>${esc(j.error)}</p></details>`:''}</div><div class="job-controls"><span class="pill ${j.status==='failed'?'error':j.status==='cancelled'?'paused':''}">${statuses[j.status]||esc(j.status)}</span>${active?`<button class="button small" data-job-action="cancel" data-kind="${j.kind}" data-id="${j.id}">取消</button>`:''}${['failed','cancelled','retrying'].includes(j.status)?`<button class="button small" data-job-action="retry" data-kind="${j.kind}" data-id="${j.id}">重试</button>`:''}${j.status==='completed'?`<button class="button small" data-job-action="open-folder" data-kind="${j.kind}" data-id="${j.id}">打开文件夹 ↗</button><a class="button small" href="/api${path}/file">获取文件 ↓</a>`:''}</div></article>`;
   }).join('') : empty('这里暂时没有下载任务','频道发现新视频后会自动加入队列。默认首次扫描只建立记录；添加频道时也可以选择先下载最近几条。');
 }
 function renderSettings() {
@@ -92,6 +98,22 @@ function renderSettings() {
   $('#manual-service-warning').hidden = !oldService;
   $('#inspect-video').disabled = oldService;
   $('#manual-destination').textContent = state.settings.manual_output_dir ? '保存位置：' + state.settings.manual_output_dir : '';
+  renderRuntimeReport();
+}
+function renderRuntimeReport() {
+  if (!runtimeReport) return;
+  $('#diagnostics-list').innerHTML = runtimeReport.components.map(item => {
+    const version = item.current || '未安装';
+    const latest = item.update_available ? ` → ${item.latest}` : item.latest ? ' · 最新' : '';
+    const status = item.update_available ? '可升级' : item.usable ? '可用' : '不可用';
+    return `<div class="diagnostic-row runtime-row"><span>${esc(item.name)}<small>${esc(item.detail || '')}</small></span><b class="${item.usable?'':'missing'}">${esc(version + latest)}<small>${status}</small></b></div>`;
+  }).join('');
+  const checked = new Date(runtimeReport.checked_at * 1000).toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit',hour12:false});
+  const errors = runtimeReport.lookup_errors?.length ? '；软件源查询未全部完成' : '';
+  $('#runtime-check-result').textContent = runtimeReport.usable ? `环境可用 · ${checked}${errors}` : `需要处理：${runtimeReport.missing.join('、')} · ${checked}${errors}`;
+  $('#runtime-check-result').classList.toggle('runtime-error', !runtimeReport.usable);
+  $('#upgrade-runtime').hidden = !runtimeReport.updates.length;
+  $('#upgrade-runtime').textContent = runtimeReport.updates.length ? `升级 ${runtimeReport.updates.length} 项` : '升级可更新组件';
 }
 async function refresh() {
   if (refreshBusy || restarting) return;
@@ -275,6 +297,26 @@ $('#job-list').addEventListener('click', async e => {
   finally { b.disabled = false; }
 });
 $('#settings-form').addEventListener('input', e => { if (e.target.id !== 'cookie-file-picker') { settingsDirty = true; $('#settings-dirty').textContent = '有未保存的修改'; } });
+$('#check-runtime').addEventListener('click', async e => {
+  const button = e.currentTarget, result = $('#runtime-check-result');
+  button.disabled = true; $('#upgrade-runtime').disabled = true; result.textContent = '正在检查组件版本与可用性…';
+  try {
+    runtimeReport = await api('/runtime/check', 'POST', undefined, 45000);
+    renderRuntimeReport();
+    toast(runtimeReport.usable ? '运行环境检查完成' : '检查完成，有组件需要处理', !runtimeReport.usable);
+  } catch(error) { result.textContent = '检查失败：' + error.message; toast(error.message, true); }
+  finally { button.disabled = false; $('#upgrade-runtime').disabled = false; }
+});
+$('#upgrade-runtime').addEventListener('click', async e => {
+  const button = e.currentTarget, check = $('#check-runtime'), result = $('#runtime-check-result');
+  button.disabled = true; check.disabled = true; result.textContent = '正在升级项目组件，完成前请勿关闭服务…';
+  try {
+    const response = await api('/runtime/upgrade', 'POST', undefined, 660000);
+    runtimeReport = response.environment; renderRuntimeReport(); toast(response.message);
+    await refresh();
+  } catch(error) { result.textContent = '升级失败：' + error.message; toast(error.message, true); }
+  finally { button.disabled = false; check.disabled = false; }
+});
 $('#import-cookies').addEventListener('click', () => $('#cookie-file-picker').click());
 async function importCookieFile(file) {
   if (!file) return;

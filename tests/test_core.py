@@ -556,6 +556,18 @@ def test_page_and_assets(client):
     assert client.get('/').headers['content-security-policy'].startswith("default-src 'self'")
 
 
+def test_runtime_check_and_upgrade_endpoints(client, monkeypatch):
+    report = {'checked_at': 1, 'usable': True, 'missing': [], 'updates': [],
+              'components': [], 'lookup_errors': []}
+    monkeypatch.setattr('app.main.check_runtime_environment', lambda: report)
+    monkeypatch.setattr('app.main.upgrade_runtime_components',
+                        lambda: {'changed': False, 'message': '已是最新版本', 'environment': report})
+    assert client.post('/api/runtime/check').json() == report
+    response = client.post('/api/runtime/upgrade')
+    assert response.status_code == 200
+    assert response.json()['environment'] == report
+
+
 def test_cookie_source_is_never_modified(tmp_path):
     source = tmp_path / 'cookies.txt'; source.write_text('# Netscape HTTP Cookie File\n')
     settings = Settings(cookies_file=str(source)).model_dump()

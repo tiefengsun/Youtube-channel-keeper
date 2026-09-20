@@ -20,6 +20,7 @@ from .file_actions import open_file_location
 from .filesystem import list_directories
 from .cookies import prepare_youtube_cookies, save_managed_cookies
 from .models import ChannelCreate, ChannelEdit, CookieImport, Settings, ManualInspect, ManualDownload
+from .runtime_updates import check_runtime_environment, upgrade_runtime_components
 from .store import Store
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -185,6 +186,17 @@ def create_app(data_dir=None, run_engine=True):
                 'channels': store.channels(), 'jobs': store.jobs(),
                 'manual_jobs': store.manual_jobs(), 'stats': store.stats(),
                 'settings': store.settings(), 'diagnostics': diagnostics(), 'auth': store.auth_info()}
+
+    @app.post('/api/runtime/check')
+    def check_runtime():
+        return check_runtime_environment()
+
+    @app.post('/api/runtime/upgrade')
+    def upgrade_runtime():
+        try:
+            return upgrade_runtime_components()
+        except RuntimeError as exc:
+            raise HTTPException(503, str(exc))
 
     @app.put('/api/auth')
     def change_auth(data: CredentialChange, response: Response):
