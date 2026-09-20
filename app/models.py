@@ -61,6 +61,26 @@ class ManualDownload(BaseModel):
     _url = field_validator('url')(video_url)
 
 
+class BatchChannelScan(BaseModel):
+    url: str
+    _url = field_validator('url')(channel_url)
+
+
+class BatchChannelDownload(BaseModel):
+    video_ids: list[str] = Field(min_length=1, max_length=5000)
+    format: Format = 'mp4'
+    resolution: Resolution = 1080
+
+    @field_validator('video_ids')
+    @classmethod
+    def valid_video_ids(cls, values):
+        if len(values) != len(set(values)):
+            raise ValueError('所选视频中存在重复项')
+        if any(not re.fullmatch(r'[A-Za-z0-9_-]{11}', value) for value in values):
+            raise ValueError('所选视频编号无效，请重新扫描频道')
+        return values
+
+
 class ChannelCreate(BaseModel):
     url: str
     name: str = Field(default='', max_length=120)

@@ -58,10 +58,14 @@ class Store:
                     stage TEXT NOT NULL DEFAULT '', speed TEXT NOT NULL DEFAULT '', eta TEXT NOT NULL DEFAULT '',
                     attempts INTEGER NOT NULL DEFAULT 0, available_at REAL NOT NULL DEFAULT 0,
                     created_at REAL NOT NULL, finished_at REAL, error TEXT NOT NULL DEFAULT '',
-                    filepath TEXT NOT NULL DEFAULT '', output_dir TEXT NOT NULL
+                    filepath TEXT NOT NULL DEFAULT '', output_dir TEXT NOT NULL,
+                    source_type TEXT NOT NULL DEFAULT 'single'
                 );
                 CREATE INDEX IF NOT EXISTS manual_jobs_queue ON manual_jobs(status, available_at);
             ''')
+            manual_columns = {row['name'] for row in db.execute('PRAGMA table_info(manual_jobs)')}
+            if 'source_type' not in manual_columns:
+                db.execute("ALTER TABLE manual_jobs ADD COLUMN source_type TEXT NOT NULL DEFAULT 'single'")
             db.execute('INSERT OR IGNORE INTO settings VALUES (1, ?)', (Settings().model_dump_json(),))
             if not db.execute('SELECT 1 FROM admin_auth WHERE id=1').fetchone():
                 salt, digest = new_password_record('keeper')
@@ -279,6 +283,27 @@ class Store:
                 VALUES (?,?,?,?,?,?,?)''', (video_id, title[:500], uploader[:200], fmt,
                     resolution, time.time(), output_dir))
             return cur.lastrowid
+
+    def add_batch_channel_jobs(self, entries, uploader, fmt, resolution, output_dir):
+        added = []
+        skipped = 0
+        now = time.time()
+        with self.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            for index, entry in enumerate(entries):
+                exists = db.execute('''SELECT 1 FROM manual_jobs WHERE video_id=?
+                    AND status IN ('queued','retrying','downloading','completed') LIMIT 1''',
+                    (entry['id'],)).fetchone()
+                if exists:
+                    skipped += 1
+                    continue
+                cur = db.execute('''INSERT INTO manual_jobs
+                    (video_id,title,uploader,format,resolution,created_at,output_dir,source_type)
+                    VALUES (?,?,?,?,?,?,?,'channel_batch')''',
+                    (entry['id'], entry['title'][:500], uploader[:200], fmt,
+                     resolution, now + index * 0.000001, output_dir))
+                added.append(cur.lastrowid)
+        return {'ids': added, 'added': len(added), 'skipped': skipped}
 
     def claim_manual_job(self):
         with self.connect() as db:

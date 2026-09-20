@@ -19,8 +19,10 @@ from .engine import Engine, diagnostics
 from .file_actions import open_file_location
 from .filesystem import list_directories
 from .cookies import prepare_youtube_cookies, save_managed_cookies
-from .models import ChannelCreate, ChannelEdit, CookieImport, Settings, ManualInspect, ManualDownload
+from .models import (BatchChannelDownload, BatchChannelScan, ChannelCreate, ChannelEdit,
+                     CookieImport, Settings, ManualInspect, ManualDownload)
 from .runtime_updates import check_runtime_environment, upgrade_runtime_components
+from .storage import safe_channel_name
 from .store import Store
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -83,7 +85,9 @@ def create_app(data_dir=None, run_engine=True):
     store = Store(folder / 'keeper.sqlite3')
     engine = Engine(store)
     inspected_videos = {}
+    batch_channel_scans = {}
     inspect_slots = threading.BoundedSemaphore(2)
+    batch_scan_slots = threading.BoundedSemaphore(1)
     login_attempts = {}
     login_lock = threading.Lock()
     lock = InstanceLock(folder / 'instance.lock')
@@ -105,6 +109,7 @@ def create_app(data_dir=None, run_engine=True):
     app.state.store = store
     app.state.engine = engine
     app.state.inspect_slots = inspect_slots
+    app.state.batch_channel_scans = batch_channel_scans
     allowed_hosts = ['127.0.0.1', 'localhost', '[::1]', 'testserver']
     if lan_ip:
         allowed_hosts.append(lan_ip)
@@ -143,6 +148,21 @@ def create_app(data_dir=None, run_engine=True):
         if not c:
             raise HTTPException(404, '频道不存在')
         return c
+
+    def batch_scan_owner(request):
+        return request.cookies.get('keeper_session', '')
+
+    def prune_batch_scans():
+        cutoff = time.time() - 1800
+        for token, scan in list(batch_channel_scans.items()):
+            if scan['updated_at'] < cutoff:
+                batch_channel_scans.pop(token, None)
+
+    def public_batch_scan(token, scan, new_entries=None):
+        return {'token': token, 'channel_name': scan['channel_name'],
+                'entries': scan['entries'] if new_entries is None else new_entries,
+                'loaded': len(scan['entries']), 'has_more': scan['has_more'],
+                'expires_at': scan['updated_at'] + 1800}
 
     @app.get('/api/health')
     def health():
@@ -311,6 +331,87 @@ def create_app(data_dir=None, run_engine=True):
                 if created < time.time() - 1800:
                     inspected_videos.pop(video_id, None)
         return info
+
+    @app.post('/api/batch-channel/scan')
+    def scan_batch_channel(data: BatchChannelScan, request: Request):
+        if not batch_scan_slots.acquire(blocking=False):
+            raise HTTPException(429, '已有频道正在读取视频列表，请稍后重试')
+        settings = {}
+        try:
+            settings = store.settings()
+            try:
+                page = engine.inspect_channel_page(data.url, settings)
+            except Exception as exc:
+                raise HTTPException(400, engine.safe_error(exc, settings))
+        finally:
+            batch_scan_slots.release()
+        with engine.actions:
+            prune_batch_scans()
+            token = uuid.uuid4().hex
+            scan = {'owner': batch_scan_owner(request), 'url': data.url,
+                    'channel_name': page['channel_name'], 'entries': page['entries'],
+                    'next_start': page['next_start'], 'has_more': page['has_more'],
+                    'updated_at': time.time()}
+            batch_channel_scans[token] = scan
+            return public_batch_scan(token, scan)
+
+    @app.post('/api/batch-channel/{token}/more')
+    def load_more_batch_channel(token: str, request: Request):
+        with engine.actions:
+            prune_batch_scans()
+            scan = batch_channel_scans.get(token)
+            if not scan or scan['owner'] != batch_scan_owner(request):
+                raise HTTPException(404, '频道扫描结果已过期，请重新扫描')
+            if not scan['has_more'] or len(scan['entries']) >= 5000:
+                scan['has_more'] = False
+                return public_batch_scan(token, scan, [])
+            url, start = scan['url'], scan['next_start']
+        if not batch_scan_slots.acquire(blocking=False):
+            raise HTTPException(429, '已有频道正在读取视频列表，请稍后重试')
+        settings = {}
+        try:
+            settings = store.settings()
+            try:
+                page = engine.inspect_channel_page(url, settings, start=start)
+            except Exception as exc:
+                raise HTTPException(400, engine.safe_error(exc, settings))
+        finally:
+            batch_scan_slots.release()
+        with engine.actions:
+            scan = batch_channel_scans.get(token)
+            if not scan or scan['owner'] != batch_scan_owner(request):
+                raise HTTPException(404, '频道扫描结果已过期，请重新扫描')
+            known = {entry['id'] for entry in scan['entries']}
+            added = [entry for entry in page['entries'] if entry['id'] not in known]
+            scan['entries'].extend(added)
+            scan['next_start'] = page['next_start']
+            scan['has_more'] = page['has_more'] and len(scan['entries']) < 5000
+            scan['updated_at'] = time.time()
+            return public_batch_scan(token, scan, added)
+
+    @app.post('/api/batch-channel/{token}/jobs', status_code=201)
+    def add_batch_channel_jobs(token: str, data: BatchChannelDownload, request: Request):
+        with engine.actions:
+            prune_batch_scans()
+            scan = batch_channel_scans.get(token)
+            if not scan or scan['owner'] != batch_scan_owner(request):
+                raise HTTPException(404, '频道扫描结果已过期，请重新扫描')
+            selected = set(data.video_ids)
+            entries = [entry for entry in scan['entries'] if entry['id'] in selected]
+            if len(entries) != len(selected):
+                raise HTTPException(400, '部分视频不在本次扫描结果中，请重新扫描')
+            folder = Path(store.settings()['manual_output_dir']) / safe_channel_name(scan['channel_name'], 0)
+            try:
+                folder.mkdir(parents=True, exist_ok=True)
+                import tempfile
+                with tempfile.TemporaryFile(dir=folder):
+                    pass
+            except OSError as exc:
+                raise HTTPException(400, f'频道下载目录无法写入：{exc}')
+            result = store.add_batch_channel_jobs(entries, scan['channel_name'], data.format,
+                                                  data.resolution, str(folder))
+        result['output_dir'] = str(folder)
+        return result
 
     @app.post('/api/manual/jobs', status_code=201)
     def add_manual_job(data: ManualDownload):

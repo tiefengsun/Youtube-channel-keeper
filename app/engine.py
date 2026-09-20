@@ -6,6 +6,7 @@ import logging
 import os
 from pathlib import Path
 import queue
+import re
 import shutil
 import subprocess
 import sys
@@ -51,9 +52,11 @@ def base_command(settings):
 
 
 def download_command(job, settings):
+    fmt = job['format']
     if job.get('kind') == 'manual':
         folder = Path(job['output_dir']).resolve()
-        output = f"%(title).120B [%(id)s] [{job['resolution']}p].%(ext)s"
+        quality_suffix = '' if fmt in ('mp3', 'm4a') else f" [{job['resolution']}p]"
+        output = f"%(title).120B [%(id)s]{quality_suffix}.%(ext)s"
     else:
         root = Path(settings['output_dir']).resolve()
         folder = channel_directory(root, job.get('channel_name'), job['channel_id'])
@@ -63,7 +66,6 @@ def download_command(job, settings):
         '--paths', str(folder), '--output', output,
         '--progress-template', 'download:__PROGRESS__%(progress)j',
         '--print', 'after_move:__FILE__%(filepath)j']
-    fmt = job['format']
     cap = f"[height<={job['resolution']}]" if job['resolution'] else ''
     if fmt in ('mp3', 'm4a'):
         args += ['-f', 'bestaudio/best', '-x', '--audio-format', fmt, '--audio-quality', '0']
@@ -169,6 +171,43 @@ class Engine:
                 return {'url': url, 'video_id': data['id'], 'title': data.get('title') or data['id'],
                     'uploader': data.get('uploader') or data.get('channel') or '',
                     'duration': data.get('duration'), 'qualities': heights}
+            finally:
+                kill_process(process)
+
+    def inspect_channel_page(self, url, settings, start=1, page_size=50):
+        end = start + page_size
+        with isolated_cookies(settings) as process_settings:
+            args = base_command(process_settings) + ['--flat-playlist', '--dump-single-json',
+                '--skip-download', '--playlist-items', f'{start}:{end}', '--', url + '/videos']
+            process = self.spawn(args)
+            try:
+                try:
+                    stdout, stderr = process.communicate(timeout=180)
+                except subprocess.TimeoutExpired:
+                    raise RuntimeError('频道视频列表解析超过 3 分钟，请检查网络或代理')
+                if process.returncode:
+                    detail = stderr.strip()
+                    prefix = 'The provided YouTube account cookies are no longer valid.\n' if cookies_rotated(detail) else ''
+                    raise RuntimeError(prefix + (detail[-1800:] or '频道视频列表解析失败'))
+                data = json.loads(stdout)
+                raw_entries = data.get('entries')
+                if not isinstance(raw_entries, list):
+                    raise RuntimeError('频道没有返回可读取的视频列表')
+                has_more = len(raw_entries) > page_size
+                entries = []
+                for entry in raw_entries[:page_size]:
+                    if not isinstance(entry, dict) or not re.fullmatch(
+                            r'[A-Za-z0-9_-]{11}', str(entry.get('id') or '')):
+                        continue
+                    if entry.get('live_status') in ('is_upcoming', 'is_live', 'post_live'):
+                        continue
+                    entries.append({'id': entry['id'], 'title': entry.get('title') or entry['id'],
+                        'duration': entry.get('duration'),
+                        'timestamp': entry.get('timestamp') or entry.get('release_timestamp'),
+                        'upload_date': entry.get('upload_date') or entry.get('release_date') or ''})
+                name = data.get('channel') or data.get('uploader') or data.get('title') or url.rsplit('/', 1)[-1]
+                return {'channel_name': str(name)[:200], 'entries': entries,
+                        'next_start': end + 1, 'has_more': has_more}
             finally:
                 kill_process(process)
 

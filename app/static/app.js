@@ -2,9 +2,10 @@
 const $ = (q, root = document) => root.querySelector(q);
 const $$ = (q, root = document) => [...root.querySelectorAll(q)];
 const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-let state, editId = null, deleteId = null, channelFilter = 'all', jobFilter = 'all', settingsDirty = false, authDirty = false, inspectedVideo = null, runtimeReport = null;
+let state, editId = null, deleteId = null, channelFilter = 'all', jobFilter = 'all', settingsDirty = false, authDirty = false, inspectedVideo = null, runtimeReport = null, batchSession = null;
 let toastTimer, refreshBusy = false, restarting = false, lastChannels = '', lastJobs = '';
 const pendingChannels = new Set();
+const batchSelected = new Set();
 const colors = [['#eaeedf','#748958'],['#f5e9df','#ae845f'],['#e6eef0','#72979b'],['#ede7f2','#9a81ac'],['#f0ebdb','#a48f57']];
 const statuses = {queued:'排队中',downloading:'下载中',retrying:'等待重试',completed:'已完成',failed:'下载失败',cancelled:'已取消'};
 
@@ -32,10 +33,16 @@ function channelVisual(id, name) {
   const [bg,fg] = colors[(Number(id) - 1) % colors.length];
   return {bg,fg,initial:String(name || '?').replace(/^@/,'').slice(0,1).toUpperCase()};
 }
+function namedVisual(name) {
+  let hash = 0;
+  for (const char of String(name || '')) hash = ((hash << 5) - hash + char.codePointAt(0)) | 0;
+  const [bg,fg] = colors[Math.abs(hash) % colors.length];
+  return {bg,fg,initial:String(name || '?').replace(/^@/,'').slice(0,1).toUpperCase()};
+}
 function showView(view) {
   $$('.page').forEach(el => el.hidden = el.id !== 'view-' + view);
   $$('.nav-item').forEach(el => el.classList.toggle('active', el.dataset.view === view));
-  $('#page-name').textContent = {channels:'频道订阅',manual:'单条视频',downloads:'下载任务',settings:'偏好设置'}[view];
+  $('#page-name').textContent = {channels:'频道订阅',manual:'单条视频',batch:'频道下载',downloads:'下载任务',settings:'偏好设置'}[view];
   location.hash = view;
 }
 function empty(title, description, action = '') {
@@ -67,13 +74,13 @@ function renderJobs(force = false) {
   const signature = JSON.stringify([state.jobs, state.manual_jobs, jobFilter]);
   if (!force && signature === lastJobs) return;
   lastJobs = signature;
-  const allJobs = [...state.jobs.map(j => ({...j,kind:'channel'})),...(state.manual_jobs||[]).map(j => ({...j,kind:'manual',channel_name:'单条视频'}))].sort((a,b) => (b.status==='downloading') - (a.status==='downloading') || b.created_at - a.created_at);
+  const allJobs = [...state.jobs.map(j => ({...j,kind:'channel'})),...(state.manual_jobs||[]).map(j => ({...j,kind:'manual',channel_name:j.source_type==='channel_batch'?j.uploader:'单条视频'}))].sort((a,b) => (b.status==='downloading') - (a.status==='downloading') || b.created_at - a.created_at);
   const jobs = allJobs.filter(j => jobFilter === 'all' || (jobFilter === 'active' ? ['queued','retrying','downloading'].includes(j.status) : jobFilter === 'failed' ? ['failed','cancelled'].includes(j.status) : j.status === jobFilter));
   const expanded = new Set($$('#job-list details[open]').map(el => el.dataset.error));
   $('#job-list').innerHTML = jobs.length ? jobs.map(j => {
     const active = ['queued','downloading','retrying'].includes(j.status);
     const path = j.kind === 'manual' ? `/manual/jobs/${j.id}` : `/jobs/${j.id}`;
-    const source = j.kind === 'channel' ? channelVisual(j.channel_id, j.channel_name) : null;
+    const source = j.kind === 'channel' ? channelVisual(j.channel_id, j.channel_name) : j.source_type === 'channel_batch' ? namedVisual(j.channel_name) : null;
     const sourceIcon = source ? `<div class="video-icon channel-source" style="--avatar-bg:${source.bg};--avatar-fg:${source.fg}">${esc(source.initial)}</div>` : `<div class="video-icon">${['mp3','m4a'].includes(j.format)?'♫':'▷'}</div>`;
     return `<article class="job-card">${sourceIcon}<div><a class="job-title" href="https://www.youtube.com/watch?v=${esc(j.video_id)}" target="_blank" rel="noreferrer">${esc(j.title)}</a><div class="job-meta"><span>${esc(j.channel_name)}</span><span>${j.format.toUpperCase()} · ${quality(j)}</span><span>${timeText(j.created_at)}</span><span>已尝试 ${j.attempts} 次</span></div>${j.status === 'downloading' ? `<div class="progress"><span style="width:${j.progress}%"></span></div><div class="progress-label">${esc(j.stage)} · ${j.progress.toFixed(1)}% ${esc(j.speed)} ${j.eta?'· 剩余 '+esc(j.eta):''}</div>` : ''}${j.status === 'retrying' ? `<div class="progress-label">计划重试：${timeText(j.available_at)}</div>` : ''}${j.filepath ? `<div class="filepath">${esc(j.filepath)}</div>`:''}${j.error?`<details class="card-error" data-error="${j.kind}:${j.id}" ${expanded.has(`${j.kind}:${j.id}`)?'open':''}><summary>查看失败原因</summary><p>${esc(j.error)}</p></details>`:''}</div><div class="job-controls"><span class="pill ${j.status==='failed'?'error':j.status==='cancelled'?'paused':''}">${statuses[j.status]||esc(j.status)}</span>${active?`<button class="button small" data-job-action="cancel" data-kind="${j.kind}" data-id="${j.id}">取消</button>`:''}${['failed','cancelled','retrying'].includes(j.status)?`<button class="button small" data-job-action="retry" data-kind="${j.kind}" data-id="${j.id}">重试</button>`:''}${j.status==='completed'?`<button class="button small" data-job-action="open-folder" data-kind="${j.kind}" data-id="${j.id}">打开文件夹 ↗</button><a class="button small" href="/api${path}/file">获取文件 ↓</a>`:''}</div></article>`;
   }).join('') : empty('这里暂时没有下载任务','频道发现新视频后会自动加入队列。默认首次扫描只建立记录；添加频道时也可以选择先下载最近几条。');
@@ -98,6 +105,7 @@ function renderSettings() {
   $('#manual-service-warning').hidden = !oldService;
   $('#inspect-video').disabled = oldService;
   $('#manual-destination').textContent = state.settings.manual_output_dir ? '保存位置：' + state.settings.manual_output_dir : '';
+  $('#batch-destination').textContent = state.settings.manual_output_dir ? '保存位置：' + state.settings.manual_output_dir + ' / 频道名' : '';
   renderRuntimeReport();
 }
 function renderRuntimeReport() {
@@ -450,6 +458,79 @@ $('#manual-download-form').addEventListener('submit', async e => {
   } catch(error) { toast(error.message,true); }
   finally { b.disabled = false; }
 });
-window.addEventListener('hashchange', () => { const view = location.hash.slice(1); if (['channels','manual','downloads','settings'].includes(view)) showView(view); });
-showView(['channels','manual','downloads','settings'].includes(location.hash.slice(1)) ? location.hash.slice(1) : 'channels');
+function batchDate(entry) {
+  if (entry.timestamp) return new Date(entry.timestamp * 1000).toLocaleDateString('zh-CN');
+  return /^\d{8}$/.test(entry.upload_date || '') ? `${entry.upload_date.slice(0,4)}-${entry.upload_date.slice(4,6)}-${entry.upload_date.slice(6,8)}` : '日期未知';
+}
+function batchDuration(seconds) {
+  if (!Number.isFinite(seconds) || seconds <= 0) return '时长未知';
+  const hours = Math.floor(seconds / 3600), minutes = Math.floor(seconds % 3600 / 60), secs = Math.floor(seconds % 60);
+  return hours ? `${hours}:${String(minutes).padStart(2,'0')}:${String(secs).padStart(2,'0')}` : `${minutes}:${String(secs).padStart(2,'0')}`;
+}
+function renderBatchVideos() {
+  if (!batchSession) return;
+  const query = $('#batch-filter').value.trim().toLowerCase();
+  const matches = batchSession.entries.filter(entry => entry.title.toLowerCase().includes(query));
+  const visible = matches.slice(0, 200);
+  $('#batch-channel-name').textContent = batchSession.channel_name;
+  $('#batch-summary').textContent = `已加载 ${batchSession.loaded} 条 · 每次继续加载 50 条 · 结果保留 30 分钟`;
+  $('#batch-selected-count').textContent = `已选 ${batchSelected.size} 条`;
+  $('#enqueue-batch').disabled = !batchSelected.size;
+  $('#batch-load-more').hidden = !batchSession.has_more;
+  const displayNote = matches.length > 200 ? `；当前显示前 200 条，请用标题筛选其余 ${matches.length - 200} 条` : '';
+  $('#batch-limit-note').textContent = (batchSession.loaded >= 5000 ? '已达到单次扫描上限 5000 条' : batchSession.has_more ? '只在需要时继续加载，避免大频道扫描过久' : '已读取到频道列表末尾') + displayNote;
+  $('#batch-video-list').innerHTML = visible.length ? visible.map(entry => `<label class="batch-video-row"><input type="checkbox" value="${esc(entry.id)}" ${batchSelected.has(entry.id)?'checked':''}><span class="batch-video-mark">▷</span><span class="batch-video-content"><a href="https://www.youtube.com/watch?v=${esc(entry.id)}" target="_blank" rel="noreferrer">${esc(entry.title)}</a><small>${batchDate(entry)} · ${batchDuration(entry.duration)}</small></span></label>`).join('') : `<div class="batch-empty">${query?'没有匹配已加载视频的标题':'这一批没有可下载的公开视频'}</div>`;
+}
+$('#batch-scan-form').addEventListener('submit', async e => {
+  e.preventDefault();
+  const button = $('#scan-batch-channel'), error = $('#batch-error');
+  button.disabled = true; button.textContent = '正在读取…'; error.hidden = true;
+  $('#batch-results').hidden = true; batchSession = null; batchSelected.clear();
+  try {
+    batchSession = await api('/batch-channel/scan', 'POST', {url:e.currentTarget.elements.url.value.trim()}, 200000);
+    $('#batch-filter').value = ''; $('#batch-results').hidden = false; renderBatchVideos();
+    toast(`已读取 ${batchSession.loaded} 条频道视频`);
+  } catch(errorValue) { error.textContent = errorValue.name === 'TimeoutError' ? '频道读取超时，请检查网络或代理' : errorValue.message; error.hidden = false; }
+  finally { button.disabled = false; button.textContent = '扫描频道'; }
+});
+$('#batch-scan-form').elements.url.addEventListener('input', () => {
+  batchSession = null; batchSelected.clear(); $('#batch-results').hidden = true;
+});
+$('#batch-load-more').addEventListener('click', async e => {
+  if (!batchSession) return;
+  const button = e.currentTarget; button.disabled = true; button.textContent = '正在继续读取…';
+  try {
+    const page = await api(`/batch-channel/${batchSession.token}/more`, 'POST', undefined, 200000);
+    batchSession.entries.push(...page.entries); batchSession.loaded = page.loaded; batchSession.has_more = page.has_more; batchSession.expires_at = page.expires_at;
+    renderBatchVideos(); toast(page.entries.length ? `又加载了 ${page.entries.length} 条视频` : '没有更多可下载的视频');
+  } catch(error) { toast(error.name === 'TimeoutError' ? '继续读取超时，请稍后重试' : error.message, true); }
+  finally { button.disabled = false; button.textContent = '继续加载 50 条'; }
+});
+$('#batch-video-list').addEventListener('change', e => {
+  const checkbox = e.target.closest('input[type=checkbox]'); if (!checkbox) return;
+  if (checkbox.checked) batchSelected.add(checkbox.value); else batchSelected.delete(checkbox.value);
+  renderBatchVideos();
+});
+$('#batch-select-all').addEventListener('click', () => {
+  if (!batchSession) return;
+  batchSession.entries.forEach(entry => batchSelected.add(entry.id)); renderBatchVideos();
+});
+$('#batch-clear').addEventListener('click', () => { batchSelected.clear(); renderBatchVideos(); });
+$('#batch-filter').addEventListener('input', renderBatchVideos);
+$('#batch-download-form').elements.format.addEventListener('change', e => {
+  $('#batch-download-form').elements.resolution.disabled = ['mp3','m4a'].includes(e.target.value);
+});
+$('#batch-download-form').addEventListener('submit', async e => {
+  e.preventDefault(); if (!batchSession || !batchSelected.size) return;
+  const form = e.currentTarget, button = $('#enqueue-batch'); button.disabled = true; button.textContent = '正在加入队列…';
+  try {
+    const result = await api(`/batch-channel/${batchSession.token}/jobs`, 'POST', {video_ids:[...batchSelected],format:form.elements.format.value,resolution:Number(form.elements.resolution.value)}, 60000);
+    batchSelected.clear();
+    const skipped = result.skipped ? `，${result.skipped} 条已在任务中并跳过` : '';
+    toast(`已加入 ${result.added} 个下载任务${skipped}`); await refresh(); showView('downloads');
+  } catch(error) { toast(error.message, true); }
+  finally { button.disabled = false; button.textContent = '下载所选视频 ↓'; }
+});
+window.addEventListener('hashchange', () => { const view = location.hash.slice(1); if (['channels','manual','batch','downloads','settings'].includes(view)) showView(view); });
+showView(['channels','manual','batch','downloads','settings'].includes(location.hash.slice(1)) ? location.hash.slice(1) : 'channels');
 refresh(); setInterval(refresh, 3000);

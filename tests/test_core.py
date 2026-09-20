@@ -101,6 +101,18 @@ def test_oldest_eligible_job_claimed_across_both_queues(store):
     assert store.claim_next_job() is None
 
 
+def test_batch_channel_jobs_use_manual_queue_and_skip_existing(store, tmp_path):
+    entries = [{'id': 'abcdefghijk', 'title': '历史视频 1'},
+               {'id': '12345678901', 'title': '历史视频 2'}]
+    result = store.add_batch_channel_jobs(entries, '示例频道', 'mp4', 1080, str(tmp_path))
+    assert result['added'] == 2
+    jobs = store.manual_jobs()
+    assert {job['source_type'] for job in jobs} == {'channel_batch'}
+    assert {job['uploader'] for job in jobs} == {'示例频道'}
+    duplicate = store.add_batch_channel_jobs(entries, '示例频道', 'mp4', 1080, str(tmp_path))
+    assert duplicate == {'ids': [], 'added': 0, 'skipped': 2}
+
+
 def test_scheduled_first_run_waits_then_can_be_changed_to_now(store):
     start_at = time.time() + 3600
     channel = store.add_channels([ChannelCreate(url='@scheduled',schedule_mode='scheduled',start_at=start_at)])[0]
@@ -172,6 +184,37 @@ def test_unlimited_resolution_has_no_height_filter(tmp_path):
     assert command[command.index('-f') + 1] == 'bestvideo+bestaudio/best'
 
 
+def test_batch_audio_filename_does_not_claim_video_resolution(tmp_path):
+    settings = Settings(manual_output_dir=str(tmp_path)).model_dump()
+    command = download_command({'kind':'manual', 'output_dir':str(tmp_path), 'format':'mp3',
+        'resolution':1080, 'video_id':'abcdefghijk'}, settings)
+    output = command[command.index('--output') + 1]
+    assert '[1080p]' not in output
+    assert '[%(id)s]' in output
+
+
+def test_channel_page_scan_requests_one_extra_entry_for_pagination(store, monkeypatch):
+    captured = []
+    payload = {'channel':'示例频道', 'entries':[
+        {'id':f'{index:011d}', 'title':f'视频 {index}', 'duration':index}
+        for index in range(51)]}
+
+    class Process:
+        returncode = 0
+        def communicate(self, timeout=None):
+            return json.dumps(payload), ''
+        def poll(self):
+            return 0
+
+    engine = Engine(store)
+    monkeypatch.setattr(engine, 'spawn', lambda args: captured.append(args) or Process())
+    page = engine.inspect_channel_page('https://www.youtube.com/@sample', store.settings())
+    assert captured[0][captured[0].index('--playlist-items') + 1] == '1:51'
+    assert len(page['entries']) == 50
+    assert page['has_more'] is True
+    assert page['next_start'] == 52
+
+
 @pytest.fixture
 def client(tmp_path):
     app = create_app(tmp_path / 'api', run_engine=False)
@@ -193,6 +236,42 @@ def test_api_add_update_scan_remove_and_atomic_duplicates(client):
     assert client.post(f'/api/channels/{channel_id}/scan').status_code == 200
     assert client.delete(f'/api/channels/{channel_id}').status_code == 200
     assert client.get('/api/state').json()['channels'] == []
+
+
+def test_batch_channel_scan_pagination_and_enqueue(client, tmp_path, monkeypatch):
+    pages = iter([
+        {'channel_name': '测试频道', 'entries': [{'id':'abcdefghijk','title':'第一条','duration':60,'timestamp':1,'upload_date':''}], 'next_start':52, 'has_more':True},
+        {'channel_name': '测试频道', 'entries': [{'id':'12345678901','title':'第二条','duration':90,'timestamp':2,'upload_date':''}], 'next_start':103, 'has_more':False},
+    ])
+    monkeypatch.setattr(client.app.state.engine, 'inspect_channel_page', lambda *args, **kwargs: next(pages))
+    settings = client.app.state.store.settings()
+    settings['manual_output_dir'] = str(tmp_path / '手动下载')
+    client.app.state.store.save_settings(settings)
+
+    first = client.post('/api/batch-channel/scan', json={'url':'@sample'})
+    assert first.status_code == 200
+    token = first.json()['token']
+    assert first.json()['loaded'] == 1 and first.json()['has_more'] is True
+    more = client.post(f'/api/batch-channel/{token}/more')
+    assert more.status_code == 200
+    assert more.json()['loaded'] == 2 and more.json()['has_more'] is False
+    queued = client.post(f'/api/batch-channel/{token}/jobs', json={
+        'video_ids':['abcdefghijk','12345678901'], 'format':'mp4', 'resolution':1080})
+    assert queued.status_code == 201
+    assert queued.json()['added'] == 2
+    assert Path(queued.json()['output_dir']).name == '测试频道'
+    jobs = client.get('/api/state').json()['manual_jobs']
+    assert {job['source_type'] for job in jobs} == {'channel_batch'}
+
+
+def test_batch_channel_rejects_video_outside_scan(client, monkeypatch):
+    monkeypatch.setattr(client.app.state.engine, 'inspect_channel_page', lambda *args, **kwargs: {
+        'channel_name':'测试频道', 'entries':[{'id':'abcdefghijk','title':'第一条'}],
+        'next_start':52, 'has_more':False})
+    token = client.post('/api/batch-channel/scan', json={'url':'@sample'}).json()['token']
+    response = client.post(f'/api/batch-channel/{token}/jobs', json={
+        'video_ids':['12345678901'], 'format':'mp4', 'resolution':1080})
+    assert response.status_code == 400
 
 
 def test_local_request_protection(client):
