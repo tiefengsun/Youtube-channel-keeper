@@ -96,7 +96,7 @@ function renderSettings() {
     }
   }
   const d = state.diagnostics;
-  const rows = [['Python',d.python],['yt-dlp',d.yt_dlp],['FFmpeg',d.ffmpeg?'已就绪':null],['ffprobe',d.ffprobe?'已就绪':null],['Node.js',d.node?'已就绪':null],['YouTube EJS',d.ejs]];
+  const rows = [['Python',d.python],['yt-dlp',d.yt_dlp],['FFmpeg',d.ffmpeg?'已就绪':null],['ffprobe',d.ffprobe?'已就绪':null],['Node.js',d.node?'已就绪':null],['YouTube EJS',d.ejs],['高画质令牌服务',d.pot_provider?.ready?`已就绪 ${d.pot_provider.version}`:null]];
   $('#diagnostics-list').innerHTML = rows.map(([name,value]) => `<div class="diagnostic-row"><span>${name}</span><b class="${value?'':'missing'}">${esc(value || '未安装')}</b></div>`).join('');
   const missing = rows.filter(([,value])=>!value).map(([name])=>name);
   $('#dependency-banner').hidden = !missing.length;
@@ -446,12 +446,14 @@ $('#manual-inspect-form').addEventListener('submit', async e => {
     $('#manual-title').textContent = result.title;
     const duration = result.duration ? ` · ${Math.floor(result.duration/60)} 分 ${Math.round(result.duration%60)} 秒` : '';
     $('#manual-meta').textContent = `${result.uploader || 'YouTube 视频'}${duration} · ${result.qualities.length} 档画质`;
+    $('#manual-quality-notice').textContent = result.quality_notice || '';
+    $('#manual-quality-notice').hidden = !result.quality_notice;
     $('#manual-download-form').elements.resolution.innerHTML = result.qualities.map(height => `<option value="${height}">${height}p${height>=2160?' · 4K':height>=1440?' · 2K':height>=1080?' · 全高清':height>=720?' · 高清':''}</option>`).join('');
     $('#manual-preview').hidden = false;
   } catch(error) { $('#manual-error').textContent = error.name === 'TimeoutError' ? '解析超时，请检查网络或代理' : error.message; $('#manual-error').hidden = false; }
   finally { b.disabled = false; b.textContent = '解析视频'; }
 });
-$('#manual-inspect-form').elements.url.addEventListener('input', () => { inspectedVideo = null; $('#manual-preview').hidden = true; });
+$('#manual-inspect-form').elements.url.addEventListener('input', () => { inspectedVideo = null; $('#manual-preview').hidden = true; $('#manual-quality-notice').hidden = true; });
 $('#manual-download-form').addEventListener('submit', async e => {
   e.preventDefault(); if (!inspectedVideo) return;
   const f = e.currentTarget, b = $('button[type=submit]', f); b.disabled = true;

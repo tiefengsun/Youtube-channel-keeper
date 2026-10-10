@@ -10,6 +10,11 @@ if not exist ".venv\Scripts\python.exe" (
 if errorlevel 1 (
     echo Update failed. Please check your network.
 ) else (
-    echo Updated. Restart Channel Keeper to use the new version.
+    ".venv\Scripts\python.exe" ".\scripts\install-pot-provider.py"
+    if errorlevel 1 (
+        echo PO Token provider installation failed. Please check Node.js 22 and your network.
+    ) else (
+        echo Updated. Restart Channel Keeper to use the new version.
+    )
 )
 pause

@@ -381,6 +381,8 @@ def test_rotated_cookies_stop_channel_scan_and_resume_after_import(store):
     message = engine.safe_error(RuntimeError(raw), store.settings())
     assert message.startswith('Cookies 已失效')
     assert '--no-warnings' not in base_command(store.settings())
+    command = base_command(store.settings())
+    assert command[command.index('--extractor-args') + 1] == 'youtube:player_client=mweb,tv,web_safari'
     store.scan_error(channel, message)
     store.update_job(job['id'], status='failed', error=message)
     manual_id = store.add_manual_job('abcdefghijk', '标题', '作者', 'mp4', 720, str(store.path.parent))

@@ -18,11 +18,12 @@ git clone https://github.com/tiefengsun/Youtube-channel-keeper.git
 cd Youtube-channel-keeper
 ```
 
-双击 `start.cmd`，会自动创建 `.venv`、安装 Python 依赖并启动服务。首次安装依赖时会暂时显示 CMD 进度；服务启动成功后窗口自动关闭，后台运行不会在桌面驻留 CMD。或者在项目目录以前台方式运行：
+双击 `start.cmd`，会自动创建 `.venv`、安装 Python 依赖和高画质 PO Token 服务并启动程序。首次安装会下载并编译令牌服务，所需时间比普通更新稍长；服务启动成功后窗口自动关闭，后台运行不会在桌面驻留 CMD。或者在项目目录以前台方式运行：
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe scripts\install-pot-provider.py
 .\.venv\Scripts\python.exe run.py
 ```
 
@@ -30,7 +31,7 @@ python -m venv .venv
 
 ## Ubuntu 24.04 服务器安装与部署
 
-以普通用户安装 Python 3.12、`python3-venv`、Git、FFmpeg/ffprobe，以及 [Node.js](https://nodejs.org/) 20+。Ubuntu 软件源中的 Node.js 版本可能低于要求，运行 `node --version` 确认版本。安装脚本要求项目位于运行用户的 **`~/channel-keeper`**，不要以 root 运行：
+以普通用户安装 Python 3.12、`python3-venv`、Git、FFmpeg/ffprobe，以及 [Node.js](https://nodejs.org/) 22+。Ubuntu 软件源中的 Node.js 版本通常低于要求，请从 Node.js 官方支持的安装来源安装并运行 `node --version` 确认版本。安装脚本要求项目位于运行用户的 **`~/channel-keeper`**，不要以 root 运行：
 
 ```bash
 sudo apt update
@@ -70,7 +71,7 @@ Windows 安装后双击 **`start.cmd`**，服务会在后台无窗口运行，�
 4. 在「偏好设置」里选择保存目录，按需填写代理和 Cookies 文件。
 5. 在「下载任务」中查看状态、重试、取消、打开文件所在目录，或获取已完成的文件。
 
-「偏好设置 → 运行环境」可以检查 Python、Node.js、FFmpeg、ffprobe、yt-dlp 与 YouTube EJS 是否可用。页面会从 PyPI 查询项目组件的新版本，并可直接升级 yt-dlp 与 YouTube EJS 后重新检查；Python、Node.js 和 FFmpeg 属于系统组件，请通过 Windows 安装程序或 Ubuntu 包管理器升级。下载任务左侧会沿用所属频道的首字与颜色，方便在多频道队列中快速辨认来源；手动添加的单条视频继续使用独立的视频或音频标识。
+「偏好设置 → 运行环境」可以检查 Python、Node.js、FFmpeg、ffprobe、yt-dlp、YouTube EJS 与高画质令牌服务是否可用。页面会从 PyPI 查询项目组件的新版本，并可直接升级 yt-dlp 与 YouTube EJS 后重新检查；Python、Node.js 和 FFmpeg 属于系统组件，请通过 Windows 安装程序或 Ubuntu 包管理器升级。高画质令牌服务只监听 `127.0.0.1:4416`，随 Channel Keeper 启停，不向局域网开放。下载任务左侧会沿用所属频道的首字与颜色，方便在多频道队列中快速辨认来源；手动添加的单条视频继续使用独立的视频或音频标识。
 
 也可以打开「单条视频」，粘贴 `youtube.com/watch`、Shorts 或 `youtu.be` 的单条视频链接。工具先解析标题、创作者、时长和实际可用分辨率，再让你选择画质与 MP4 / MKV / WebM 格式。提交后在「下载任务」查看进度；文件直接保存在「偏好设置 → 单条视频保存目录」。解析结果保留 30 分钟，过期后重新解析即可。所选分辨率是上限，如果下载时源画质发生变化，会选择不超过该值的最高可用画质。频道与单条视频共用下载并发额度，按入队时间领取；同时最多解析 2 条单条视频。
 
@@ -90,7 +91,7 @@ Windows 安装后双击 **`start.cmd`**，服务会在后台无窗口运行，�
 
 YouTube 有时提示 **Sign in to confirm you're not a bot**。此时可导入你自己的有效 **Netscape 格式** Cookies 文件后重试。不要把 Cookies 发给别人；它可能包含登录凭据。
 
-工具不会读取浏览器账户。每次扫描和下载会临时复制指定的 Cookies 文件，操作结束后清理副本，不修改原文件。文件过期后需要自行更新。Cookies 不保证消除所有站点限制，会员/地区/不可用视频仍受对应访问条件影响。
+工具不会读取浏览器账户。每次扫描和下载会临时复制指定的 Cookies 文件，操作结束后清理副本，不修改原文件。文件过期后需要自行更新。Cookies 负责登录与会员权限；内置的 PO Token 服务会按视频自动生成 YouTube 高画质请求所需的短期令牌。两者用途不同，Cookies 不能代替 PO Token。年龄、会员、地区、DRM 或尚未完成高画质处理的视频仍受 YouTube 对应限制。
 
 在 Chrome 中使用 Get cookies.txt 等扩展导出 Netscape 格式的 `cookies.txt`，然后打开「偏好设置 → Cookies 文件」，点击「导入…」，或者直接把 `.txt` 文件拖到**Cookies 路径输入框**。也可以手动填写服务所在电脑上已有文件的绝对路径。服务端会解析 Netscape 文件，只保留 YouTube、Google 和视频传输相关域名的未过期记录，保存到 `data/secrets/youtube-cookies.txt` 并自动启用。Cookie 值不会显示在页面或写入日志。因机器人验证失败而等待重试的任务会自动重新排队。
 
@@ -115,11 +116,12 @@ Google API Key 不能替代登录 Cookies。远程使用 Ubuntu 服务时，建�
 | 队列 | 可在偏好设置选择 1–5 个同时下载任务；扫描线程独立运行，持久化去重、分段进度、单任务取消与重试 |
 | 失败重试 | 默认额外重试 3 次，1 分钟起指数退避，最长 1 小时；耗尽后显示失败原因 |
 | 重启恢复 | 正在下载的任务重新入队，保留 `.part` 文件；支持时由 yt-dlp 续传 |
-| 本机诊断 | 显示 Python、yt-dlp、FFmpeg、ffprobe、Node.js、EJS 状态 |
+| 本机诊断 | 显示 Python、yt-dlp、FFmpeg、ffprobe、Node.js、EJS 与高画质令牌服务状态 |
 
 注意这些具体约定：
 
 - 分辨率是**上限**，系统会自动下载不超过该值的最高可用画质。比如设置 1080p：源视频最高只有 720p 时下载 720p；源视频有 4K 时下载 1080p；如果没有恰好 1080p，则选择 1080p 以下最高的一档。选择“可用最高画质”则不设上限。MP4 是容器，不代表视频一定是 H.264；4K/新编码的播放兼容性取决于播放器。
+- YouTube 对部分视频逐条要求 PO Token。系统会自动运行令牌服务并优先使用适合的播放器客户端；如果服务已正常工作却仍只返回 360p，界面会提示该视频可能存在年龄、地区、会员、DRM 限制或仍在处理高画质。PO Token 能恢复被验证流程隐藏的格式，但不绕过内容权限。
 - 频道设置在新视频入队时保存到任务中，修改不会改变已有任务的格式。代理、Cookies、下载目录在每次任务开始时读取；已运行任务保持原配置。
 - 默认枚举整个所选栏目以避免“只看最新几条”漏检；大频道首次及后续扫描可能较慢。单次扫描超时 15 分钟，失败保留旧基线，并在不超过 15 分钟后重试。
 - 空栏目首次未能读到视频时不会建立基线。正在直播、预告、等待处理的直播视频先跳过，后续可用时再处理。

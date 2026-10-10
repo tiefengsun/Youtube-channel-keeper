@@ -21,6 +21,7 @@ from .filesystem import list_directories
 from .cookies import prepare_youtube_cookies, save_managed_cookies
 from .models import (BatchChannelDownload, BatchChannelScan, ChannelCreate, ChannelEdit,
                      CookieImport, Settings, ManualInspect, ManualDownload)
+from .pot_provider import PotProvider
 from .runtime_updates import check_runtime_environment, upgrade_runtime_components
 from .storage import safe_channel_name
 from .store import Store
@@ -84,6 +85,7 @@ def create_app(data_dir=None, run_engine=True):
     folder = Path(data_dir or os.environ.get('CHANNEL_KEEPER_DATA', ROOT / 'data'))
     store = Store(folder / 'keeper.sqlite3')
     engine = Engine(store)
+    pot_provider = PotProvider(folder)
     inspected_videos = {}
     batch_channel_scans = {}
     inspect_slots = threading.BoundedSemaphore(2)
@@ -96,12 +98,14 @@ def create_app(data_dir=None, run_engine=True):
     async def lifespan(app):
         if run_engine:
             lock.acquire()
+            pot_provider.start()
             engine.start()
         try:
             yield
         finally:
             if run_engine:
                 engine.stop()
+                pot_provider.stop()
                 lock.release()
 
     app = FastAPI(title='频道收藏站', lifespan=lifespan, docs_url=None, redoc_url=None)

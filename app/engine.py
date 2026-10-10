@@ -15,6 +15,7 @@ import time
 import tempfile
 
 from .storage import channel_directory
+from .pot_provider import plugin_version, provider_status
 
 log = logging.getLogger(__name__)
 
@@ -43,7 +44,8 @@ def isolated_cookies(settings):
 def base_command(settings):
     args = [sys.executable, '-m', 'yt_dlp', '--ignore-config', '--encoding', 'utf-8',
             '--no-colors', '--socket-timeout', '30', '--retries', '3',
-            '--extractor-retries', '2', '--js-runtimes', 'node']
+            '--extractor-retries', '2', '--js-runtimes', 'node',
+            '--extractor-args', 'youtube:player_client=mweb,tv,web_safari']
     if settings['proxy']:
         args += ['--proxy', settings['proxy']]
     if settings['cookies_file']:
@@ -91,9 +93,11 @@ def diagnostics():
         ejs = importlib.metadata.version('yt-dlp-ejs')
     except importlib.metadata.PackageNotFoundError:
         ejs = None
+    pot = provider_status()
     return {'python': sys.version.split()[0], 'yt_dlp': version, 'ejs': ejs,
             'ffmpeg': shutil.which('ffmpeg'), 'ffprobe': shutil.which('ffprobe'),
-            'node': shutil.which('node')}
+            'node': shutil.which('node'), 'pot_plugin': plugin_version(),
+            'pot_provider': pot}
 
 
 def kill_process(process):
@@ -168,9 +172,19 @@ class Engine:
                     and isinstance(f.get('height'), int) and 1 <= f['height'] <= 4320}, reverse=True)
                 if not heights:
                     raise RuntimeError('未读取到可下载的视频画质，请确认视频可访问')
+                quality_notice = ''
+                if max(heights) <= 360:
+                    pot = provider_status()
+                    if not pot['ready']:
+                        quality_notice = ('目前最高只解析到 360p，且 PO Token 服务未运行。请在偏好设置检查运行环境，'
+                                          '安装组件并重启服务后重新解析。')
+                    else:
+                        quality_notice = ('PO Token 服务已工作，但 YouTube 仍只返回到 360p。该视频可能有年龄、地区、'
+                                          '会员或 DRM 限制，也可能仍在处理高画质版本。')
                 return {'url': url, 'video_id': data['id'], 'title': data.get('title') or data['id'],
                     'uploader': data.get('uploader') or data.get('channel') or '',
-                    'duration': data.get('duration'), 'qualities': heights}
+                    'duration': data.get('duration'), 'qualities': heights,
+                    'quality_notice': quality_notice}
             finally:
                 kill_process(process)
 

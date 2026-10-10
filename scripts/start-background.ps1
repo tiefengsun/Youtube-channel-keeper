@@ -47,7 +47,7 @@ $serviceProcess = Start-Process -FilePath $pythonPath `
     -WindowStyle Hidden `
     -PassThru
 
-for ($attempt = 0; $attempt -lt 120; $attempt++) {
+for ($attempt = 0; $attempt -lt 360; $attempt++) {
     Start-Sleep -Milliseconds 250
     if (Get-ChannelKeeperHealth) {
         if (-not $NoBrowser) { Start-Process $url }
@@ -62,4 +62,4 @@ for ($attempt = 0; $attempt -lt 120; $attempt++) {
 if (-not $serviceProcess.HasExited) {
     Stop-Process -Id $serviceProcess.Id -Force -ErrorAction SilentlyContinue
 }
-throw "Channel Keeper did not become ready within 30 seconds. Check data\keeper.log and data\background.log."
+throw "Channel Keeper did not become ready within 90 seconds. Check data\keeper.log and data\background.log."

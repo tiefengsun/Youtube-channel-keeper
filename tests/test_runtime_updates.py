@@ -6,7 +6,8 @@ import app.runtime_updates as runtime_updates
 def test_environment_check_finds_managed_updates_and_validates_tools(monkeypatch):
     monkeypatch.setattr(runtime_updates, 'diagnostics', lambda: {
         'python': '3.12.7', 'yt_dlp': '2026.8.19', 'ejs': '0.8.0',
-        'ffmpeg': 'ffmpeg', 'ffprobe': 'ffprobe', 'node': 'node'})
+        'ffmpeg': 'ffmpeg', 'ffprobe': 'ffprobe', 'node': 'node',
+        'pot_plugin': '2.0.2', 'pot_provider': {'ready': True, 'version': '2.0.2'}})
     versions = {
         'node': 'v22.18.0',
         'ffmpeg': 'ffmpeg version 7.1.1 Copyright',
@@ -26,7 +27,8 @@ def test_environment_check_finds_managed_updates_and_validates_tools(monkeypatch
 def test_environment_check_survives_offline_package_index(monkeypatch):
     monkeypatch.setattr(runtime_updates, 'diagnostics', lambda: {
         'python': '3.12.7', 'yt_dlp': '2026.8.19', 'ejs': '0.8.0',
-        'ffmpeg': None, 'ffprobe': None, 'node': None})
+        'ffmpeg': None, 'ffprobe': None, 'node': None,
+        'pot_plugin': None, 'pot_provider': {'ready': False, 'version': ''}})
 
     def offline(_):
         raise OSError('offline')
@@ -35,7 +37,7 @@ def test_environment_check_survives_offline_package_index(monkeypatch):
     assert report['usable'] is False
     assert report['updates'] == []
     assert report['lookup_errors']
-    assert report['missing'] == ['FFmpeg', 'ffprobe', 'Node.js']
+    assert report['missing'] == ['FFmpeg', 'ffprobe', 'Node.js', '高画质令牌服务']
 
 
 def test_upgrade_uses_fixed_project_package_allowlist():

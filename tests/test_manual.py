@@ -89,6 +89,27 @@ def test_inspect_reads_available_video_heights(tmp_path, monkeypatch):
     info = engine.inspect_video('https://www.youtube.com/watch?v=abcdefghijk', store.settings())
     assert info['qualities'] == [1080, 720]
     assert info['duration'] == 61
+    assert info['quality_notice'] == ''
+
+
+def test_inspect_explains_360p_when_token_provider_is_unavailable(tmp_path, monkeypatch):
+    store = Store(tmp_path / 'keeper.db')
+    from app.engine import Engine
+    engine = Engine(store)
+
+    class Process:
+        returncode = 0
+        def communicate(self, timeout):
+            return json.dumps({'id':'abcdefghijk','title':'样例',
+                'formats':[{'height':360,'vcodec':'avc1'}]}), ''
+        def poll(self): return 0
+
+    monkeypatch.setattr(engine, 'spawn', lambda args: Process())
+    monkeypatch.setattr('app.engine.provider_status',
+                        lambda: {'ready': False, 'version': '', 'installed': False})
+    info = engine.inspect_video('https://www.youtube.com/watch?v=abcdefghijk', store.settings())
+    assert info['qualities'] == [360]
+    assert 'PO Token 服务未运行' in info['quality_notice']
 
 
 def test_manual_inspection_has_two_slot_limit(tmp_path):

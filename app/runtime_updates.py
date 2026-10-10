@@ -75,10 +75,15 @@ def check_runtime_environment(latest_provider=_latest_pypi):
          'latest': None, 'usable': bool(ffprobe_line), 'managed': False,
          'detail': '随 FFmpeg 安装；由操作系统管理'},
         {'key': 'node', 'name': 'Node.js', 'current': node_version.lstrip('v'),
-         'latest': None, 'usable': _version_parts(node_version) >= (20,),
-         'managed': False, 'detail': '需要 20 或更高版本；由操作系统管理'},
+         'latest': None, 'usable': _version_parts(node_version) >= (22,),
+         'managed': False, 'detail': 'PO Token 服务需要 22 或更高版本；由操作系统管理'},
         {'key': 'ejs', 'name': 'YouTube EJS', 'current': current['ejs'] or '',
          'latest': None, 'usable': bool(current['ejs']), 'managed': True, 'detail': ''},
+        {'key': 'pot', 'name': '高画质令牌服务',
+         'current': (current.get('pot_provider') or {}).get('version', '') or current.get('pot_plugin', ''),
+         'latest': None,
+         'usable': bool(current.get('pot_plugin')) and bool((current.get('pot_provider') or {}).get('ready')),
+         'managed': False, 'detail': '为受 YouTube PO Token 校验的视频恢复可用画质；随服务自动启动'},
     ]
     lookup_errors = []
     by_key = {item['key']: item for item in components}

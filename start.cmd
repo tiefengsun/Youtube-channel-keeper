@@ -10,6 +10,13 @@ if not exist ".venv\installed.marker" (
     if errorlevel 1 goto :failed
     echo installed>".venv\installed.marker"
 )
+".venv\Scripts\python.exe" -m pip show bgutil-ytdlp-pot-provider >nul 2>&1
+if errorlevel 1 (
+    ".venv\Scripts\python.exe" -m pip install -r requirements.txt
+    if errorlevel 1 goto :failed
+)
+".venv\Scripts\python.exe" ".\scripts\install-pot-provider.py"
+if errorlevel 1 goto :failed
 powershell -NoProfile -ExecutionPolicy Bypass -File ".\scripts\start-background.ps1"
 if errorlevel 1 goto :failed
 exit /b 0

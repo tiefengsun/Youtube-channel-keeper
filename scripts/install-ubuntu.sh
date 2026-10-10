@@ -16,13 +16,14 @@ for program in python3 node ffmpeg ffprobe; do
     exit 1
   fi
 done
-if (( $(node -p 'Number(process.versions.node.split(".")[0])') < 20 )); then
-  printf 'Node.js 20 or newer is required for YouTube extraction.\n' >&2
+if (( $(node -p 'Number(process.versions.node.split(".")[0])') < 22 )); then
+  printf 'Node.js 22 or newer is required for YouTube extraction and the PO Token provider.\n' >&2
   exit 1
 fi
 
 python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python scripts/install-pot-provider.py
 mkdir -p data downloads "$HOME/.config/systemd/user"
 chmod 700 data downloads
 install -m 644 deploy/channel-keeper.service "$HOME/.config/systemd/user/channel-keeper.service"
