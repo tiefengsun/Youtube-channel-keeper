@@ -164,6 +164,7 @@ def create_app(data_dir=None, run_engine=True):
 
     def public_batch_scan(token, scan, new_entries=None):
         return {'token': token, 'channel_name': scan['channel_name'],
+                'tab': scan['tab'],
                 'entries': scan['entries'] if new_entries is None else new_entries,
                 'loaded': len(scan['entries']), 'has_more': scan['has_more'],
                 'expires_at': scan['updated_at'] + 1800}
@@ -344,7 +345,7 @@ def create_app(data_dir=None, run_engine=True):
         try:
             settings = store.settings()
             try:
-                page = engine.inspect_channel_page(data.url, settings)
+                page = engine.inspect_channel_page(data.url, settings, tab=data.tab)
             except Exception as exc:
                 raise HTTPException(400, engine.safe_error(exc, settings))
         finally:
@@ -352,7 +353,7 @@ def create_app(data_dir=None, run_engine=True):
         with engine.actions:
             prune_batch_scans()
             token = uuid.uuid4().hex
-            scan = {'owner': batch_scan_owner(request), 'url': data.url,
+            scan = {'owner': batch_scan_owner(request), 'url': data.url, 'tab': data.tab,
                     'channel_name': page['channel_name'], 'entries': page['entries'],
                     'next_start': page['next_start'], 'has_more': page['has_more'],
                     'updated_at': time.time()}
@@ -369,14 +370,14 @@ def create_app(data_dir=None, run_engine=True):
             if not scan['has_more'] or len(scan['entries']) >= 5000:
                 scan['has_more'] = False
                 return public_batch_scan(token, scan, [])
-            url, start = scan['url'], scan['next_start']
+            url, tab, start = scan['url'], scan['tab'], scan['next_start']
         if not batch_scan_slots.acquire(blocking=False):
             raise HTTPException(429, '已有频道正在读取视频列表，请稍后重试')
         settings = {}
         try:
             settings = store.settings()
             try:
-                page = engine.inspect_channel_page(url, settings, start=start)
+                page = engine.inspect_channel_page(url, settings, start=start, tab=tab)
             except Exception as exc:
                 raise HTTPException(400, engine.safe_error(exc, settings))
         finally:

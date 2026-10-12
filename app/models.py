@@ -63,6 +63,7 @@ class ManualDownload(BaseModel):
 
 class BatchChannelScan(BaseModel):
     url: str
+    tab: Literal['videos', 'shorts'] = 'videos'
     _url = field_validator('url')(channel_url)
 
 

@@ -490,13 +490,14 @@ function renderBatchVideos() {
   const matches = batchSession.entries.filter(entry => entry.title.toLowerCase().includes(query));
   const visible = matches.slice(0, 200);
   $('#batch-channel-name').textContent = batchSession.channel_name;
-  $('#batch-summary').textContent = `已加载 ${batchSession.loaded} 条 · 每次继续加载 50 条 · 结果保留 30 分钟`;
+  const tabName = batchSession.tab === 'shorts' ? 'Shorts' : '普通视频';
+  $('#batch-summary').textContent = `${tabName} · 已加载 ${batchSession.loaded} 条 · 每次继续加载 50 条 · 结果保留 30 分钟`;
   $('#batch-selected-count').textContent = `已选 ${batchSelected.size} 条`;
   $('#enqueue-batch').disabled = !batchSelected.size;
   $('#batch-load-more').hidden = !batchSession.has_more;
   const displayNote = matches.length > 200 ? `；当前显示前 200 条，请用标题筛选其余 ${matches.length - 200} 条` : '';
   $('#batch-limit-note').textContent = (batchSession.loaded >= 5000 ? '已达到单次扫描上限 5000 条' : batchSession.has_more ? '只在需要时继续加载，避免大频道扫描过久' : '已读取到频道列表末尾') + displayNote;
-  $('#batch-video-list').innerHTML = visible.length ? visible.map(entry => `<label class="batch-video-row"><input type="checkbox" value="${esc(entry.id)}" ${batchSelected.has(entry.id)?'checked':''}><span class="batch-video-mark">▷</span><span class="batch-video-content"><a href="https://www.youtube.com/watch?v=${esc(entry.id)}" target="_blank" rel="noreferrer">${esc(entry.title)}</a><small>${batchDate(entry)} · ${batchDuration(entry.duration)}</small></span></label>`).join('') : `<div class="batch-empty">${query?'没有匹配已加载视频的标题':'这一批没有可下载的公开视频'}</div>`;
+  $('#batch-video-list').innerHTML = visible.length ? visible.map(entry => `<label class="batch-video-row"><input type="checkbox" value="${esc(entry.id)}" ${batchSelected.has(entry.id)?'checked':''}><span class="batch-video-mark">${batchSession.tab==='shorts'?'S':'▷'}</span><span class="batch-video-content"><a href="https://www.youtube.com/${batchSession.tab==='shorts'?'shorts/':'watch?v='}${esc(entry.id)}" target="_blank" rel="noreferrer">${esc(entry.title)}</a><small>${batchDate(entry)} · ${batchDuration(entry.duration)}</small></span></label>`).join('') : `<div class="batch-empty">${query?'没有匹配已加载内容的标题':batchSession.tab==='shorts'?'这一批没有可下载的 Shorts':'这一批没有可下载的普通视频'}</div>`;
 }
 $('#batch-scan-form').addEventListener('submit', async e => {
   e.preventDefault();
@@ -504,13 +505,16 @@ $('#batch-scan-form').addEventListener('submit', async e => {
   button.disabled = true; button.textContent = '正在读取…'; error.hidden = true;
   $('#batch-results').hidden = true; batchSession = null; batchSelected.clear();
   try {
-    batchSession = await api('/batch-channel/scan', 'POST', {url:e.currentTarget.elements.url.value.trim()}, 200000);
+    batchSession = await api('/batch-channel/scan', 'POST', {url:e.currentTarget.elements.url.value.trim(),tab:e.currentTarget.elements.tab.value}, 200000);
     $('#batch-filter').value = ''; $('#batch-results').hidden = false; renderBatchVideos();
-    toast(`已读取 ${batchSession.loaded} 条频道视频`);
+    toast(`已读取 ${batchSession.loaded} 条${batchSession.tab==='shorts'?' Shorts':'普通视频'}`);
   } catch(errorValue) { error.textContent = errorValue.name === 'TimeoutError' ? '频道读取超时，请检查网络或代理' : errorValue.message; error.hidden = false; }
   finally { button.disabled = false; button.textContent = '扫描频道'; }
 });
 $('#batch-scan-form').elements.url.addEventListener('input', () => {
+  batchSession = null; batchSelected.clear(); $('#batch-results').hidden = true;
+});
+$('#batch-scan-form').elements.tab.addEventListener('change', () => {
   batchSession = null; batchSelected.clear(); $('#batch-results').hidden = true;
 });
 $('#batch-load-more').addEventListener('click', async e => {

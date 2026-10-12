@@ -188,11 +188,13 @@ class Engine:
             finally:
                 kill_process(process)
 
-    def inspect_channel_page(self, url, settings, start=1, page_size=50):
+    def inspect_channel_page(self, url, settings, start=1, page_size=50, tab='videos'):
+        if tab not in ('videos', 'shorts'):
+            raise ValueError('频道栏目只支持普通视频或 Shorts')
         end = start + page_size
         with isolated_cookies(settings) as process_settings:
             args = base_command(process_settings) + ['--flat-playlist', '--dump-single-json',
-                '--skip-download', '--playlist-items', f'{start}:{end}', '--', url + '/videos']
+                '--skip-download', '--playlist-items', f'{start}:{end}', '--', url + '/' + tab]
             process = self.spawn(args)
             try:
                 try:

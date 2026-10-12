@@ -210,9 +210,13 @@ def test_channel_page_scan_requests_one_extra_entry_for_pagination(store, monkey
     monkeypatch.setattr(engine, 'spawn', lambda args: captured.append(args) or Process())
     page = engine.inspect_channel_page('https://www.youtube.com/@sample', store.settings())
     assert captured[0][captured[0].index('--playlist-items') + 1] == '1:51'
+    assert captured[0][-1] == 'https://www.youtube.com/@sample/videos'
     assert len(page['entries']) == 50
     assert page['has_more'] is True
     assert page['next_start'] == 52
+
+    engine.inspect_channel_page('https://www.youtube.com/@sample', store.settings(), tab='shorts')
+    assert captured[1][-1] == 'https://www.youtube.com/@sample/shorts'
 
 
 @pytest.fixture
@@ -243,17 +247,23 @@ def test_batch_channel_scan_pagination_and_enqueue(client, tmp_path, monkeypatch
         {'channel_name': '测试频道', 'entries': [{'id':'abcdefghijk','title':'第一条','duration':60,'timestamp':1,'upload_date':''}], 'next_start':52, 'has_more':True},
         {'channel_name': '测试频道', 'entries': [{'id':'12345678901','title':'第二条','duration':90,'timestamp':2,'upload_date':''}], 'next_start':103, 'has_more':False},
     ])
-    monkeypatch.setattr(client.app.state.engine, 'inspect_channel_page', lambda *args, **kwargs: next(pages))
+    calls = []
+    monkeypatch.setattr(client.app.state.engine, 'inspect_channel_page',
+                        lambda *args, **kwargs: calls.append((args, kwargs)) or next(pages))
     settings = client.app.state.store.settings()
     settings['manual_output_dir'] = str(tmp_path / '手动下载')
     client.app.state.store.save_settings(settings)
 
-    first = client.post('/api/batch-channel/scan', json={'url':'@sample'})
+    first = client.post('/api/batch-channel/scan', json={'url':'@sample','tab':'shorts'})
     assert first.status_code == 200
     token = first.json()['token']
+    assert first.json()['tab'] == 'shorts'
+    assert calls[0][1]['tab'] == 'shorts'
     assert first.json()['loaded'] == 1 and first.json()['has_more'] is True
     more = client.post(f'/api/batch-channel/{token}/more')
     assert more.status_code == 200
+    assert more.json()['tab'] == 'shorts'
+    assert calls[1][1]['tab'] == 'shorts'
     assert more.json()['loaded'] == 2 and more.json()['has_more'] is False
     queued = client.post(f'/api/batch-channel/{token}/jobs', json={
         'video_ids':['abcdefghijk','12345678901'], 'format':'mp4', 'resolution':1080})
@@ -272,6 +282,11 @@ def test_batch_channel_rejects_video_outside_scan(client, monkeypatch):
     response = client.post(f'/api/batch-channel/{token}/jobs', json={
         'video_ids':['12345678901'], 'format':'mp4', 'resolution':1080})
     assert response.status_code == 400
+
+
+def test_batch_channel_rejects_unknown_tab(client):
+    response = client.post('/api/batch-channel/scan', json={'url':'@sample','tab':'streams'})
+    assert response.status_code == 422
 
 
 def test_local_request_protection(client):
