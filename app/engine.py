@@ -61,7 +61,8 @@ def download_command(job, settings):
         output = f"%(title).120B [%(id)s]{quality_suffix}.%(ext)s"
     else:
         root = Path(settings['output_dir']).resolve()
-        folder = channel_directory(root, job.get('channel_name'), job['channel_id'])
+        folder = channel_directory(root, job.get('channel_name'), job['channel_id'],
+                                   job.get('channel_url', ''))
         output = '%(title).120B [%(id)s].%(ext)s'
     args = base_command(settings) + ['--no-playlist', '--no-simulate', '--newline', '--progress',
         '--continue', '--windows-filenames', '--trim-filenames', '180',

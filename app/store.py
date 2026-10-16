@@ -255,7 +255,8 @@ class Store:
     def claim_job(self):
         with self.connect() as db:
             db.execute('BEGIN IMMEDIATE')
-            row = db.execute('''SELECT j.*,c.name AS channel_name FROM jobs j JOIN channels c ON c.id=j.channel_id
+            row = db.execute('''SELECT j.*,c.name AS channel_name,c.url AS channel_url
+                FROM jobs j JOIN channels c ON c.id=j.channel_id
                 WHERE j.status IN ('queued','retrying') AND j.available_at<=? AND c.enabled=1
                 ORDER BY j.id LIMIT 1''', (time.time(),)).fetchone()
             if row:
@@ -354,7 +355,7 @@ class Store:
             now = time.time()
             manual = db.execute('''SELECT * FROM manual_jobs WHERE status IN ('queued','retrying')
                 AND available_at<=? ORDER BY created_at,id LIMIT 1''', (now,)).fetchone()
-            channel = db.execute('''SELECT j.*,c.name AS channel_name FROM jobs j
+            channel = db.execute('''SELECT j.*,c.name AS channel_name,c.url AS channel_url FROM jobs j
                 JOIN channels c ON c.id=j.channel_id WHERE j.status IN ('queued','retrying')
                 AND j.available_at<=? AND c.enabled=1 ORDER BY j.created_at,j.id LIMIT 1''', (now,)).fetchone()
             if manual is None and channel is None:

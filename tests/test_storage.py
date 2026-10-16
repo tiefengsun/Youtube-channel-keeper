@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 import sqlite3
 import threading
 import time
@@ -56,6 +57,26 @@ def test_same_name_and_unowned_directory_are_not_merged(tmp_path):
     assert channel_directory(tmp_path, '同名频道', 2) == second
     (tmp_path / '已有文件夹').mkdir()
     assert channel_directory(tmp_path, '已有文件夹', 3).name == '已有文件夹 [3]'
+
+
+def test_readded_channel_reuses_folder_by_stable_url(tmp_path):
+    url = 'https://www.youtube.com/@same-channel'
+    original = channel_directory(tmp_path, '同一频道', 4, url)
+    assert channel_directory(tmp_path, '同一频道', 7, url) == original
+    owner = json.loads((original / '.channel-keeper.json').read_text(encoding='utf-8'))
+    assert owner == {'channel_id': 7, 'channel_key': url}
+
+    other = channel_directory(tmp_path, '同一频道', 8,
+                              'https://www.youtube.com/@different-channel')
+    assert other.name == '同一频道 [8]'
+
+
+def test_legacy_marker_is_upgraded_for_current_subscription(tmp_path):
+    folder = channel_directory(tmp_path, '旧目录', 3)
+    url = 'https://www.youtube.com/@legacy'
+    assert channel_directory(tmp_path, '旧目录', 3, url) == folder
+    owner = json.loads((folder / '.channel-keeper.json').read_text(encoding='utf-8'))
+    assert owner == {'channel_id': 3, 'channel_key': url}
 
 
 def test_concurrent_workers_use_one_channel_directory(tmp_path, monkeypatch):
