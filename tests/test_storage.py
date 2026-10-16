@@ -1,4 +1,5 @@
 from pathlib import Path
+import sqlite3
 import threading
 import time
 
@@ -7,6 +8,23 @@ import pytest
 from app.models import ChannelCreate
 from app.storage import channel_directory, safe_channel_name
 from app.store import Store
+
+
+def test_existing_database_adds_unread_column_without_old_notifications(tmp_path):
+    path = tmp_path / 'legacy.db'
+    with sqlite3.connect(path) as db:
+        db.execute('''CREATE TABLE jobs (
+            id INTEGER PRIMARY KEY, channel_id INTEGER NOT NULL, video_id TEXT NOT NULL,
+            title TEXT NOT NULL, format TEXT NOT NULL, resolution INTEGER NOT NULL,
+            status TEXT NOT NULL DEFAULT 'completed', progress REAL NOT NULL DEFAULT 100,
+            stage TEXT NOT NULL DEFAULT '', speed TEXT NOT NULL DEFAULT '', eta TEXT NOT NULL DEFAULT '',
+            attempts INTEGER NOT NULL DEFAULT 0, available_at REAL NOT NULL DEFAULT 0,
+            created_at REAL NOT NULL, finished_at REAL, error TEXT NOT NULL DEFAULT '',
+            filepath TEXT NOT NULL DEFAULT '', UNIQUE(channel_id, video_id))''')
+        db.execute("INSERT INTO jobs (channel_id,video_id,title,format,resolution,created_at) VALUES (1,'abcdefghijk','旧视频','mp4',1080,0)")
+
+    store = Store(path)
+    assert store.job(1)['unread'] == 0
 
 
 def test_channel_names_flow_from_queue_to_directory(tmp_path):

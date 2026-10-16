@@ -87,6 +87,22 @@ def test_atomic_claim_prevents_duplicate_download(store):
     assert sum(j is not None for j in results) == 1
 
 
+def test_unread_downloads_roll_up_to_channel_and_can_be_cleared(store):
+    channel = add(store, 2)
+    store.finish_scan(channel, videos(2, 1))
+    jobs = store.jobs()
+    for job in jobs:
+        store.update_job(job['id'], status='completed', unread=1)
+    assert store.channels()[0]['unread_count'] == 2
+    assert {job['unread'] for job in store.jobs()} == {1}
+
+    assert store.mark_job_read(jobs[0]['id'])
+    assert store.channels()[0]['unread_count'] == 1
+    assert store.mark_channel_read(channel) == 1
+    assert store.channels()[0]['unread_count'] == 0
+    assert {job['unread'] for job in store.jobs()} == {0}
+
+
 def test_oldest_eligible_job_claimed_across_both_queues(store):
     channel = add(store, 1)
     store.finish_scan(channel, videos(1))
@@ -427,6 +443,27 @@ def test_cancel_retry_and_active_process_race(client):
     assert store.job(job['id'])['status'] == 'queued'
 
 
+def test_unread_api_clears_one_job_or_whole_channel(client):
+    store = client.app.state.store
+    channel = add(store, 2)
+    store.finish_scan(channel, videos(2, 1))
+    jobs = store.jobs()
+    for job in jobs:
+        store.update_job(job['id'], status='completed', unread=1)
+
+    response = client.post(f"/api/jobs/{jobs[0]['id']}/read")
+    assert response.status_code == 200
+    assert store.job(jobs[0]['id'])['unread'] == 0
+    assert store.channels()[0]['unread_count'] == 1
+
+    response = client.post(f'/api/channels/{channel}/read')
+    assert response.status_code == 200
+    assert response.json()['cleared'] == 1
+    assert store.channels()[0]['unread_count'] == 0
+    assert client.post('/api/jobs/999999/read').status_code == 404
+    assert client.post('/api/channels/999999/read').status_code == 404
+
+
 def test_cancel_one_active_job_does_not_cancel_another(client):
     store = client.app.state.store
     channel = add(store, 2)
@@ -590,6 +627,25 @@ def test_worker_failure_backoff_and_retry_exhaustion(store, monkeypatch):
     engine.stop_event.clear()
     engine.download_loop()
     assert store.job(job['id'])['status'] == 'failed'
+
+
+def test_successful_subscription_download_is_marked_unread(store, tmp_path, monkeypatch):
+    channel = add(store, 1)
+    store.finish_scan(channel, videos(1))
+    engine = Engine(store)
+    downloaded = tmp_path / 'downloaded.mp4'
+    downloaded.write_bytes(b'video')
+
+    def succeed(*args):
+        engine.stop_event.set()
+        return str(downloaded)
+
+    monkeypatch.setattr(engine, 'download', succeed)
+    engine.download_loop()
+    job = store.jobs()[0]
+    assert job['status'] == 'completed'
+    assert job['unread'] == 1
+    assert store.channels()[0]['unread_count'] == 1
 
 
 def test_worker_does_not_retry_rotated_cookies(store, monkeypatch):

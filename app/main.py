@@ -509,6 +509,21 @@ def create_app(data_dir=None, run_engine=True):
         with engine.actions:
             return store.clear_finished_jobs()
 
+    @app.post('/api/jobs/{job_id}/read')
+    def mark_job_read(job_id: int):
+        with engine.actions:
+            if not store.mark_job_read(job_id):
+                raise HTTPException(404, '任务不存在')
+        return {'ok': True}
+
+    @app.post('/api/channels/{channel_id}/read')
+    def mark_channel_read(channel_id: int):
+        with engine.actions:
+            if not store.channel(channel_id):
+                raise HTTPException(404, '频道不存在')
+            cleared = store.mark_channel_read(channel_id)
+        return {'ok': True, 'cleared': cleared}
+
     @app.post('/api/jobs/{job_id}/{action}')
     def job_action(job_id: int, action: str):
         with engine.actions:

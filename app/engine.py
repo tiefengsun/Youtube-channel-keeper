@@ -406,8 +406,11 @@ class Engine:
                     with self.actions:
                         current = self.get_job(job)
                         if current and current['status'] == 'downloading':
-                            self.update_job(job, status='completed', progress=100,
+                            completed = dict(status='completed', progress=100,
                                 stage='已完成', filepath=filepath, finished_at=time.time(), speed='', eta='')
+                            if job.get('kind') != 'manual':
+                                completed['unread'] = 1
+                            self.update_job(job, **completed)
             except Interrupted:
                 with self.actions:
                     if job and (current := self.get_job(job)) and current['status'] == 'downloading':

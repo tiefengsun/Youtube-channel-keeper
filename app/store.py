@@ -48,7 +48,8 @@ class Store:
                     stage TEXT NOT NULL DEFAULT '', speed TEXT NOT NULL DEFAULT '', eta TEXT NOT NULL DEFAULT '',
                     attempts INTEGER NOT NULL DEFAULT 0, available_at REAL NOT NULL DEFAULT 0,
                     created_at REAL NOT NULL, finished_at REAL, error TEXT NOT NULL DEFAULT '',
-                    filepath TEXT NOT NULL DEFAULT '', UNIQUE(channel_id, video_id)
+                    filepath TEXT NOT NULL DEFAULT '', unread INTEGER NOT NULL DEFAULT 0,
+                    UNIQUE(channel_id, video_id)
                 );
                 CREATE INDEX IF NOT EXISTS jobs_queue ON jobs(status, available_at);
                 CREATE TABLE IF NOT EXISTS manual_jobs (
@@ -66,6 +67,9 @@ class Store:
             manual_columns = {row['name'] for row in db.execute('PRAGMA table_info(manual_jobs)')}
             if 'source_type' not in manual_columns:
                 db.execute("ALTER TABLE manual_jobs ADD COLUMN source_type TEXT NOT NULL DEFAULT 'single'")
+            job_columns = {row['name'] for row in db.execute('PRAGMA table_info(jobs)')}
+            if 'unread' not in job_columns:
+                db.execute('ALTER TABLE jobs ADD COLUMN unread INTEGER NOT NULL DEFAULT 0')
             db.execute('INSERT OR IGNORE INTO settings VALUES (1, ?)', (Settings().model_dump_json(),))
             if not db.execute('SELECT 1 FROM admin_auth WHERE id=1').fetchone():
                 salt, digest = new_password_record('keeper')
@@ -142,7 +146,9 @@ class Store:
     def channels(self):
         with self.connect() as db:
             return [dict(r) for r in db.execute('''SELECT c.*,
-                (SELECT COUNT(*) FROM videos v WHERE v.channel_id=c.id) AS video_count
+                (SELECT COUNT(*) FROM videos v WHERE v.channel_id=c.id) AS video_count,
+                (SELECT COUNT(*) FROM jobs j WHERE j.channel_id=c.id
+                    AND j.status='completed' AND j.unread=1) AS unread_count
                 FROM channels c ORDER BY c.id DESC''')]
 
     def channel(self, channel_id):
@@ -259,12 +265,23 @@ class Store:
             return dict(row) if row else None
 
     def update_job(self, job_id, **fields):
-        allowed = {'status', 'progress', 'stage', 'speed', 'eta', 'available_at', 'finished_at', 'error', 'filepath', 'attempts'}
+        allowed = {'status', 'progress', 'stage', 'speed', 'eta', 'available_at', 'finished_at', 'error', 'filepath', 'attempts', 'unread'}
         if not fields or not fields.keys() <= allowed:
             raise ValueError('Invalid job fields')
         with self.connect() as db:
             db.execute(f"UPDATE jobs SET {','.join(k+'=?' for k in fields)} WHERE id=?",
                        (*fields.values(), job_id))
+
+    def mark_job_read(self, job_id):
+        with self.connect() as db:
+            result = db.execute('UPDATE jobs SET unread=0 WHERE id=?', (job_id,))
+            return result.rowcount > 0
+
+    def mark_channel_read(self, channel_id):
+        with self.connect() as db:
+            result = db.execute('UPDATE jobs SET unread=0 WHERE channel_id=? AND unread=1',
+                                (channel_id,))
+            return result.rowcount
 
     def manual_jobs(self, limit=300):
         with self.connect() as db:
