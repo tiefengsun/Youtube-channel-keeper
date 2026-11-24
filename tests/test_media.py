@@ -47,8 +47,8 @@ def test_real_download_and_conversion(fmt, media_server, tmp_path, monkeypatch):
     info_file = tmp_path / 'info.json'; info_file.write_text(json.dumps(info),encoding='utf-8')
     original_command = engine_module.download_command
 
-    def local_command(job, settings):
-        command = original_command(job,settings)
+    def local_command(job, settings, **kwargs):
+        command = original_command(job,settings, **kwargs)
         # Keep the production format/progress/postprocess options, replacing only
         # YouTube metadata extraction with deterministic metadata for local media.
         return command[:-2] + ['--load-info-json',str(info_file)]
@@ -82,7 +82,7 @@ def test_real_manual_download_uses_independent_folder(media_server, tmp_path, mo
     info_file.write_text(json.dumps(info), encoding='utf-8')
     original_command = engine_module.download_command
     monkeypatch.setattr(engine_module, 'download_command',
-        lambda job, settings: original_command(job, settings)[:-2] + ['--load-info-json', str(info_file)])
+        lambda job, settings, **kwargs: original_command(job, settings, **kwargs)[:-2] + ['--load-info-json', str(info_file)])
     store = Store(tmp_path / 'manual.db')
     target = tmp_path / '手动保存'
     target.mkdir()

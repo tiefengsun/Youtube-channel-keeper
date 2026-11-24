@@ -6,7 +6,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import time
-from urllib.request import urlopen
+from urllib.request import ProxyHandler, Request, build_opener, urlopen
 
 
 log = logging.getLogger(__name__)
@@ -32,6 +32,17 @@ def provider_status(timeout=0.35):
         return {'ready': bool(version), 'version': version, 'installed': PROVIDER_ENTRY.is_file()}
     except (OSError, ValueError, TypeError):
         return {'ready': False, 'version': '', 'installed': PROVIDER_ENTRY.is_file()}
+
+
+def refresh_provider_cache():
+    """Discard cached tokens after a media 403; never send this via a proxy."""
+    request = Request(f'http://127.0.0.1:{PROVIDER_PORT}/invalidate_caches',
+                      data=b'', method='POST')
+    try:
+        with build_opener(ProxyHandler({})).open(request, timeout=3) as response:
+            return response.status == 204
+    except (OSError, ValueError):
+        return False
 
 
 class PotProvider:

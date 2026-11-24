@@ -413,7 +413,7 @@ def test_rotated_cookies_stop_channel_scan_and_resume_after_import(store):
     assert message.startswith('Cookies 已失效')
     assert '--no-warnings' not in base_command(store.settings())
     command = base_command(store.settings())
-    assert command[command.index('--extractor-args') + 1] == 'youtube:player_client=mweb,tv,web_safari'
+    assert '--extractor-args' not in command
     store.scan_error(channel, message)
     store.update_job(job['id'], status='failed', error=message)
     manual_id = store.add_manual_job('abcdefghijk', '标题', '作者', 'mp4', 720, str(store.path.parent))
@@ -558,7 +558,7 @@ def test_real_subprocess_progress_and_final_file(store, tmp_path, monkeypatch):
         + 'Path(path).write_bytes(b"test video")\n'
         + 'print("__FILE__" + json.dumps(path))\n',encoding='utf-8')
     monkeypatch.setattr('app.engine.diagnostics',lambda:{'ffmpeg':True,'ffprobe':True,'node':True,'ejs':True})
-    monkeypatch.setattr('app.engine.download_command',lambda *_:[sys.executable,'-u',str(script)])
+    monkeypatch.setattr('app.engine.download_command',lambda *_, **kwargs:[sys.executable,'-u',str(script)])
     result = Engine(store).download(job,Settings(output_dir=str(tmp_path)).model_dump())
     assert Path(result) == output
     assert store.job(job['id'])['progress'] == 50

@@ -15,13 +15,21 @@ import time
 import tempfile
 
 from .storage import channel_directory
-from .pot_provider import plugin_version, provider_status
+from .pot_provider import plugin_version, provider_status, refresh_provider_cache
 
 log = logging.getLogger(__name__)
 
 
 def cookies_rotated(value):
     return 'provided youtube account cookies are no longer valid' in str(value).lower()
+
+
+def youtube_challenge_failed(value):
+    value = str(value).lower()
+    return any(marker in value for marker in (
+        'challenge solving failed', 'signature extraction failed',
+        'error solving n challenge', 'error solving sig challenge',
+        'addondisposecallback is not a function'))
 
 
 class Interrupted(Exception):
@@ -41,11 +49,20 @@ def isolated_cookies(settings):
         yield {**settings, 'cookies_file': str(cookie_copy)}
 
 
-def base_command(settings):
+def media_forbidden(value):
+    value = str(value).lower()
+    return 'http error 403' in value and any(marker in value for marker in (
+        'unable to download video data', '[download]', 'fragment'))
+
+
+def base_command(settings, *, player_client=None):
     args = [sys.executable, '-m', 'yt_dlp', '--ignore-config', '--encoding', 'utf-8',
             '--no-colors', '--socket-timeout', '30', '--retries', '3',
-            '--extractor-retries', '2', '--js-runtimes', 'node',
-            '--extractor-args', 'youtube:player_client=mweb,tv,web_safari']
+            '--extractor-retries', '2', '--js-runtimes', 'node']
+    # Let yt-dlp track YouTube's changing client requirements. A fixed list
+    # overrides newly supported clients even after updating yt-dlp.
+    if player_client:
+        args += ['--extractor-args', f'youtube:player_client={player_client}']
     if settings['proxy']:
         args += ['--proxy', settings['proxy']]
     if settings['cookies_file']:
@@ -53,7 +70,7 @@ def base_command(settings):
     return args
 
 
-def download_command(job, settings):
+def download_command(job, settings, *, player_client=None):
     fmt = job['format']
     if job.get('kind') == 'manual':
         folder = Path(job['output_dir']).resolve()
@@ -64,7 +81,7 @@ def download_command(job, settings):
         folder = channel_directory(root, job.get('channel_name'), job['channel_id'],
                                    job.get('channel_url', ''))
         output = '%(title).120B [%(id)s].%(ext)s'
-    args = base_command(settings) + ['--no-playlist', '--no-simulate', '--newline', '--progress',
+    args = base_command(settings, player_client=player_client) + ['--no-playlist', '--no-simulate', '--newline', '--progress',
         '--continue', '--windows-filenames', '--trim-filenames', '180',
         '--paths', str(folder), '--output', output,
         '--progress-template', 'download:__PROGRESS__%(progress)j',
@@ -300,13 +317,33 @@ class Engine:
                 '随即关闭无痕窗口并重新导入。导出后不要再次打开该无痕会话。')
         if 'confirm you' in value.lower() and 'bot' in value.lower():
             hint = 'YouTube 要求登录验证。请在偏好设置中填写有效的 Cookies 文件，检查网络后重试。\n'
+        elif youtube_challenge_failed(value):
+            return ('YouTube 播放器 JavaScript 校验失败，未能获取音视频格式；'
+                    '这不表示源视频缺少所选分辨率。请在「偏好设置 → 运行环境」'
+                    '升级 yt-dlp 与 YouTube EJS 后重试。')
         elif 'requested format is not available' in value.lower():
             hint = '该视频没有符合当前格式与分辨率上限的版本。可为后续视频调整频道设置；当前任务保留创建时的设置。\n'
+        elif media_forbidden(value):
+            hint = 'YouTube 拒绝了音视频请求（403）。请检查网络出口是否稳定；若持续失败，请检查运行环境与 Cookies。\n'
         return hint + value[-1600:]
 
     def download(self, job, settings):
         with isolated_cookies(settings) as process_settings:
-            return self._download(job, process_settings)
+            try:
+                return self._download(job, process_settings)
+            except RuntimeError as exc:
+                if not media_forbidden(exc) or cookies_rotated(exc):
+                    raise
+                if self.stop_event.is_set():
+                    raise Interrupted()
+                # Re-extract fresh media URLs with a different client and a
+                # fresh token, keeping authentication and the quality ceiling.
+                # _download has already closed the previous child process.
+                refreshed = refresh_provider_cache()
+                log.warning('Media 403 for %s job %s video %s; retrying once with '
+                            'mweb (token cache refreshed=%s)', job.get('kind', 'channel'),
+                            job['id'], job['video_id'], refreshed)
+                return self._download(job, process_settings, player_client='mweb')
 
     def get_job(self, job):
         return self.store.manual_job(job['id']) if job.get('kind') == 'manual' else self.store.job(job['id'])
@@ -317,16 +354,17 @@ class Engine:
         else:
             self.store.update_job(job['id'], **fields)
 
-    def _download(self, job, settings):
+    def _download(self, job, settings, *, player_client=None):
         deps = diagnostics()
         if not deps['ffmpeg'] or not deps['ffprobe']:
             raise RuntimeError('未找到 FFmpeg / ffprobe，请安装后重启工具，再重试任务')
         if not deps['node'] or not deps['ejs']:
             raise RuntimeError('缺少 Node.js 或 yt-dlp-ejs，请运行安装脚本补齐依赖')
-        process = self.spawn(download_command(job, settings), merge=True)
+        process = self.spawn(download_command(job, settings, player_client=player_client), merge=True)
         lines = queue.Queue()
         tail = deque(maxlen=12)
         rotated_warning = False
+        challenge_warning = False
 
         def reader():
             try:
@@ -373,12 +411,16 @@ class Engine:
                 else:
                     if cookies_rotated(line):
                         rotated_warning = True
+                    if youtube_challenge_failed(line):
+                        challenge_warning = True
                     tail.append(line)
             process.wait(timeout=30)
             if process.returncode:
                 detail = '\n'.join(tail)[-1800:] or 'yt-dlp 下载失败'
                 if rotated_warning:
                     detail = 'The provided YouTube account cookies are no longer valid.\n' + detail
+                if challenge_warning:
+                    detail = 'YouTube JavaScript challenge solving failed.\n' + detail
                 raise RuntimeError(detail)
             result = Path(filepath).resolve() if filepath else None
             root = job['output_dir'] if job.get('kind') == 'manual' else settings['output_dir']
@@ -418,7 +460,9 @@ class Engine:
                         self.update_job(job, status='queued', stage='等待恢复', progress=0,
                                               attempts=max(0, job['attempts'] - 1))
             except Exception as exc:
-                log.warning('Download failed: %s', self.safe_error(exc, settings))
+                log.warning('Download failed (job=%s, video=%s): %s',
+                            job['id'] if job else None, job['video_id'] if job else None,
+                            self.safe_error(exc, settings))
                 if job:
                     try:
                         with self.actions:
